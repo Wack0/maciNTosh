@@ -537,15 +537,33 @@ static bool FbSetDepthAti(OFHANDLE Screen) {
 	}
 	BaseAddress += 0x7ffc00;
 	
+	// Rage4 has registers in different places...
+	bool IsRage4 = false;
+	{
+		char NameBuffer[32];
+		ULONG NameBufLen = sizeof(NameBuffer);
+		Status = OfGetProperty(GfxDevice, "name", NameBuffer, &NameBufLen);
+		if (ARC_FAIL(Status)) return false;
+		IsRage4 = strstr(NameBuffer, "ATY,Rage128") != NULL;
+	}
+	
+	// determine register offsets
+	ULONG off_CRTC_GEN_CNTL = (IsRage4 ? 0x50 : 0x1C);
+	ULONG off_DAC_REGS = (IsRage4 ? 0xB0 : 0xC0);
+	ULONG off_DAC_CNTL = (IsRage4 ? 0xB4 : 0xC4);
+	ULONG off_DSP_CONFIG = (IsRage4 ? 0x2E0 : 0x20);
+	ULONG off_DSP_ON_OFF = (IsRage4 ? 0x2E4 : 0x24);
+	
 	// power off the CRTC while we make changes:
-	volatile U32LE* CRTC_GEN_CNTL = (volatile U32LE*)(BaseAddress + 0x1C);
+	volatile U32LE* CRTC_GEN_CNTL = (volatile U32LE*)(BaseAddress + off_CRTC_GEN_CNTL);
 	CRTC_GEN_CNTL->v = (CRTC_GEN_CNTL->v & ~(1 << 25));
 	__asm__ volatile ("eieio");
 	
 	// change the mode by using the DAC registers, some cards may require this
-	volatile UCHAR* DAC_REGS = (volatile UCHAR*)(BaseAddress + 0xC0);
-	volatile U32LE* DAC_CNTL = (volatile U32LE*)(BaseAddress + 0xC4);
-	ULONG ChipId = ((volatile U32LE*)(BaseAddress + 0xE0))->v;
+	volatile UCHAR* DAC_REGS = (volatile UCHAR*)(BaseAddress + off_DAC_REGS);
+	volatile U32LE* DAC_REGS32 = (volatile U32LE*)DAC_REGS;
+	volatile U32LE* DAC_CNTL = (volatile U32LE*)(BaseAddress + off_DAC_CNTL);
+	ULONG ChipId = IsRage4 ? 0x5200 : ((volatile U32LE*)(BaseAddress + 0xE0))->v;
 	USHORT DeviceId = ChipId & 0xFFFF;
 	UCHAR ChipRev = (ChipId >> 24);
 	// Emulator fix: dingusppc doing things in a different way as usual:
@@ -579,12 +597,15 @@ static bool FbSetDepthAti(OFHANDLE Screen) {
 		}
 		if (ReallyHasDsp) {
 			// BUGBUG: this is correct for Lombard, what about other systems???
-			volatile U16LE* DSP_CONFIG = (volatile U16LE*)(BaseAddress + 0x20);
-			volatile U16LE* DSP_ON_OFF = (volatile U16LE*)(BaseAddress + 0x24);
-			USHORT xclks64 = DSP_CONFIG[1].v & ~(3 << 14);
-			xclks64 *= 4;
-			xclks64 += 3;
-			DSP_CONFIG[1].v = (DSP_CONFIG[1].v & (3 << 14)) | xclks64;
+			// Rage4 has these registers named differently but they appear to be same regs
+			volatile U16LE* DSP_CONFIG = (volatile U16LE*)(BaseAddress + off_DSP_CONFIG);
+			volatile U16LE* DSP_ON_OFF = (volatile U16LE*)(BaseAddress + off_DSP_ON_OFF);
+			USHORT configHigh = DSP_CONFIG[1].v;
+			USHORT loop_latency = configHigh & 0xF;
+			USHORT precision = (configHigh >> 4) & 0x7;
+			precision /= 2;
+			precision <<= 4;
+			DSP_CONFIG[1].v = loop_latency | precision;
 			DSP_ON_OFF[0].v *= 2;
 			DSP_ON_OFF[1].v *= 2;
 			__asm__ volatile ("eieio");
@@ -598,15 +619,25 @@ static bool FbSetDepthAti(OFHANDLE Screen) {
 	__asm__ volatile ("eieio");
 #else
 	// set MEM_CNTL to 32 bits
-	volatile U32LE* MEM_CNTL = (volatile U32LE*)(BaseAddress + 0x140);
-	MEM_CNTL->v = (MEM_CNTL->v & ~0x0F000000) | 0x06000000;
-	__asm__ volatile ("eieio");
+	// do not do this for rage4 which has different MEM_CNTL register layout
+	if (!IsRage4) {
+		volatile U32LE* MEM_CNTL = (volatile U32LE*)(BaseAddress + 0x140);
+		MEM_CNTL->v = (MEM_CNTL->v & ~0x0F000000) | 0x06000000;
+		__asm__ volatile ("eieio");
+	}
 #endif
 	
 	// deal with the DAC
 	//DAC_REGS[4] &= ~0x20; __asm__ volatile ("eieio");
-	DAC_REGS[0] = 0; __asm__ volatile ("eieio");
+	if (IsRage4) DAC_REGS32->v = 0;
+	else DAC_REGS[0] = 0;
+	__asm__ volatile ("eieio");
+	
 	for (ULONG i = 0; i < sizeof(sc_GammaTable); i++) {
+		if (IsRage4) {
+			DAC_CNTL->v = sc_GammaTable[i]; __asm__ volatile ("eieio");
+			continue;
+		}
 		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
 		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
 		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
