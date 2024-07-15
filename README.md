@@ -12,13 +12,13 @@ The ARC firmware itself runs at a low enough level that it should be compatible 
 * Power Macintosh G3 (beige)
 * Macintosh PowerBook G3 Series *"Wallstreet"*, *"PDQ"*
 
-There may be issues on your hardware; with real hardware, this has only been tested on a Lombard.
+There may be issues on your hardware.
 
 NT HAL and drivers have no source present for now.
 
 ## Drivers present in ARC firmware
 
-* Cuda and PMU (albeit Cuda is untested on real hardware)
+* Cuda and PMU
 	* ADB keyboard
 * Flat 32bpp video framebuffer, set up by the loader. Currently the loader only supports ATI hardware (there may be issues with any ATI hardware with fcode version prior to 1.69, only the ATI Rage Pro LT (as present in Lombard) has been tested)
 * Mac I/O internal IDE controllers, forked from OpenBIOS (**there are no drivers for PCI IDE controllers!**)
@@ -27,7 +27,6 @@ NT HAL and drivers have no source present for now.
 ## Drivers currently done for NT
 
 * HAL, including: NT boot time framebuffer, super I/O interrupt controller, Grackle PCI bus support, Cuda and PMU (including low level ADB), serial port for kernel debugging only
-	* (please note Cuda support is currently untested on real hardware)
 * Mac I/O internal IDE controller, forked from `atapi.sys` from NT4 DDK
 * General HID/storage driver, intended to also contain a USB stack in future but currently only implements ADB keyboard/mouse and ramdisk as floppy drive for installing drivers at text setup time
 * Flat 32bpp video framebuffer miniport driver
