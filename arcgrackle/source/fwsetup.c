@@ -17,6 +17,7 @@
 enum {
 	SETUP_MENU_CHOICE_SYSPART,
 	SETUP_MENU_CHOICE_UPDATE,
+	SETUP_MENU_CHOICE_LOADRD,
 	SETUP_MENU_CHOICE_NOMBRBOOT,
 	SETUP_MENU_CHOICE_EXIT,
 	SETUP_MENU_CHOICES_COUNT
@@ -505,6 +506,8 @@ static PCHAR ArcFwGetSystemPartitionDrive(PCHAR SysPart) {
 	return SysPart;
 }
 
+ARC_STATUS ArcDiskInitRamdisk(void);
+
 void ArcFwSetup(void) {
 	while (1) {
 		ULONG DefaultChoice = 0;
@@ -512,6 +515,7 @@ void ArcFwSetup(void) {
 		PCHAR MenuChoices[SETUP_MENU_CHOICES_COUNT] = {
 			"Repartition disk for NT installation",
 			"Update boot partition on disk",
+			"Load driver ramdisk",
 			"Reboot to OSX install or OS8/OS9",
 			"Exit"
 		};
@@ -592,6 +596,19 @@ void ArcFwSetup(void) {
 
 		// Execute the selected option.
 		if (DefaultChoice == SETUP_MENU_CHOICE_EXIT) {
+			return;
+		}
+
+		if (DefaultChoice == SETUP_MENU_CHOICE_LOADRD) {
+			ARC_STATUS Status = ArcDiskInitRamdisk();
+			if (ARC_SUCCESS(Status)) {
+				printf(" Loaded ramdisk successfully\r\n");
+			}
+			else {
+				printf(" Failed to load ramdisk: %s\r\n", ArcGetErrorString(Status));
+			}
+			printf(" Press any key to continue...\r\n");
+			IOSKBD_ReadChar();
 			return;
 		}
 

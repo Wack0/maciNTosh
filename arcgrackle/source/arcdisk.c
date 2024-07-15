@@ -801,7 +801,7 @@ ULONG ArcDiskGetSizeMb(ULONG Disk) {
 	return s_SizeDiskMb[Disk];
 }
 
-void ArcDiskInitRamdisk(void);
+ARC_STATUS ArcDiskInitRamdisk(void);
 
 void ArcDiskInit() {
 	ArcDiskIdeInit();

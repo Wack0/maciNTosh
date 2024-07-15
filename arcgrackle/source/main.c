@@ -209,6 +209,12 @@ static void PrintDevices(ULONG DiskCount, ULONG CdromCount) {
 		snprintf(PathName, sizeof(PathName), "cd%02d:", Cd);
 		printf(" %s - %s\r\n", Cd == 0 ? "cd:" : PathName, ArcEnvGetDevice(PathName));
 	}
+	// then ramdisk
+	if (s_RuntimeRamdisk.Buffer.Length != 0) printf(" drivers.img ramdisk loaded\r\n");
+}
+
+bool ArcHasRamdiskLoaded(void) {
+	return (s_RuntimeRamdisk.Buffer.Length != 0);
 }
 
 void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length) {

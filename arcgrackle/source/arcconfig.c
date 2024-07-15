@@ -735,11 +735,13 @@ static const DEVICE_VECTORS s_RdVectors = {
     .GetDirectoryEntry = NULL
 };
 
+bool ArcHasRamdiskLoaded(void);
 void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length);
 
-void ArcDiskInitRamdisk(void) {
+ARC_STATUS ArcDiskInitRamdisk(void) {
+    if (ArcHasRamdiskLoaded()) return _ESUCCESS;
     // Ensure there are enough spaces for 3 components (controller, disk, fdisk).
-    if (g_AdditionalComponentsCount > (MAXIMUM_DEVICE_COUNT - 3)) return;
+    if (g_AdditionalComponentsCount > (MAXIMUM_DEVICE_COUNT - 3)) return _ENOSPC;
 
     PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
 
@@ -750,6 +752,7 @@ void ArcDiskInitRamdisk(void) {
     ArcDiskGetCounts(NULL, &CountCdrom);
 
     // Walk through all CDROMs
+    ARC_STATUS Status = _EFAULT;
     for (ULONG i = 0; i < CountCdrom; i++) {
         char CdVar[6];
         char Path[1024];
@@ -759,7 +762,7 @@ void ArcDiskInitRamdisk(void) {
 
         // Open file
         U32LE FileId;
-        ARC_STATUS Status = Api->OpenRoutine(Path, ArcOpenReadOnly, &FileId);
+        Status = Api->OpenRoutine(Path, ArcOpenReadOnly, &FileId);
         if (ARC_FAIL(Status)) continue;
 
         do {
@@ -786,6 +789,7 @@ void ArcDiskInitRamdisk(void) {
             }
             if (Count.v != FileSize32) {
                 FileSize32 = 0;
+                Status = _EIO;
                 break;
             }
 
@@ -795,7 +799,7 @@ void ArcDiskInitRamdisk(void) {
         break;
     }
 
-    if (Ramdisk == NULL || FileSize32 == 0) return;
+    if (Ramdisk == NULL || FileSize32 == 0) return Status;
 
     // Grab the root device.
     PDEVICE_ENTRY Root = ArcGetChild(NULL);
@@ -803,7 +807,7 @@ void ArcDiskInitRamdisk(void) {
     PDEVICE_ENTRY RdControl = (PDEVICE_ENTRY)ArcAddChild(&Root->Component, &s_RamdiskController, NULL);
     if (RdControl == NULL) {
         printf("ArcAddChild(Root, RamdiskController) failed\r\n");
-        return;
+        return _EFAULT;
     }
     while (ArcConfigKeyExists(RdControl)) RdControl->Component.Key++;
     // Same, but for disk controller.
@@ -811,7 +815,7 @@ void ArcDiskInitRamdisk(void) {
     PDEVICE_ENTRY RdDisk = ArcAddChild(&RdControl->Component, &s_RamdiskDisk, NULL);
     if (RdDisk == NULL) {
         printf("ArcAddChild(RamdiskController, RamdiskDisk) failed\r\n");
-        return;
+        return _EFAULT;
     }
     // Same, but for fixed disk device.
     s_RamdiskResource.Descriptors[0].Memory.Length = FileSize32;
@@ -820,7 +824,7 @@ void ArcDiskInitRamdisk(void) {
     PDEVICE_ENTRY RdFdisk = ArcAddChild(&RdDisk->Component, &s_RamdiskFdisk, &s_RamdiskResource);
     if (RdFdisk == NULL) {
         printf("ArcAddChild(RamdiskDisk, RamdiskFdisk) failed\r\n");
-        return;
+        return _EFAULT;
     }
 
     // Set up the vectors for fixed disk device.
@@ -828,7 +832,7 @@ void ArcDiskInitRamdisk(void) {
 
     // Initialise the runtime descriptor for the NT driver.
     ArcInitRamDisk(RdControl->Component.Key, Ramdisk, FileSize32);
-
+    return _ESUCCESS;
 }
 
 void ArcConfigInit(void) {

@@ -53,6 +53,7 @@ NT4 only, currently. NT 3.51 may become compatible if HAL and drivers get ported
 
 ### Installing NT
 
+* If ARC firmware does not show `drivers.img ramdisk loaded`, go to `Run firmware setup`, then `Load driver ramdisk` - make sure it succeeds before continuing.
 * Eject CD and insert your NT4 CD.
 * Go to `Run a program` and enter the path `cd:\ppc\setupldr` - this may be `cd01:` or `cd02:` (...) if you have multiple optical drives present on your system.
 	* This may error with `The file or device does not exist`, just go back to `Run a program` and try again if so. 
