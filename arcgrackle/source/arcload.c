@@ -91,12 +91,12 @@ static void InstructionPerformPatch(
     // NT 4 osloader checks pvr, if it's not in hardcoded list then panic
     // so patch this check :)
     if (PvrVersion > 9 && PvrVersion != 20) {
-        PPC_INSTRUCTION_BIG Insn;
+        PPC_INSTRUCTION Insn;
         Insn.Long = instruction;
         if (Insn.Primary_Op == X31_OP && Insn.XFXform_XO == MFSPR_OP && Insn.XFXform_spr == 1000) {
             // Make NT believe this is an Arthur derivative
             // addis rx, 0, 8
-            PPC_INSTRUCTION_BIG Patch;
+            PPC_INSTRUCTION Patch;
             Patch.Long = 0;
             Patch.Primary_Op = ADDIS_OP;
             Patch.Dform_RT = Insn.XFXform_RT;
