@@ -380,7 +380,7 @@ void ArcEnvLoad(void) {
 			// Partition 1: 0x41
 			if (Sector[0x1BE + 4] != 0x41) break;
 			// Partition 3: FAT16 system partition
-			if (Sector[0x1DE + 4] != 0x0E) break;
+			if (Sector[0x1DE + 4] != 0x0E && Sector[0x1DE + 4] != 0x06) break;
 			// Partition 4: 0xEE
 			if (Sector[0x1EE + 4] != 0xEE) break;
 			// (active byte 0x7F)

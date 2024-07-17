@@ -1234,10 +1234,10 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	Mbr.Partitions[0].Type = 0x41;
 	Mbr.Partitions[0].SectorStart = REPART_APM_SECTORS;
 	Mbr.Partitions[0].SectorCount = REPART_MBR_PART1_SIZE;
-	Mbr.Partitions[1].Type = NtPartitionIsExtended ? 0x07 : 0x0E;
+	Mbr.Partitions[1].Type = NtPartitionIsExtended ? 0x07 : 0x06;
 	Mbr.Partitions[1].SectorStart = REPART_MBR_PART2_START;
 	Mbr.Partitions[1].SectorCount = NtPartMb * REPART_MB_SECTORS;
-	Mbr.Partitions[2].Type = 0x0E;
+	Mbr.Partitions[2].Type = 0x06;
 	Mbr.Partitions[2].SectorStart = Mbr.Partitions[1].SectorStart + Mbr.Partitions[1].SectorCount;
 	Mbr.Partitions[2].SectorCount = REPART_MBR_PART3_SIZE;
 	Mbr.Partitions[3].Type = 0xEE;
@@ -2017,31 +2017,7 @@ ARC_STATUS ArcFsRestoreMbr(ULONG DeviceId) {
 		// Either backup is invalid, or both are valid.
 		// Assume that primary got modified (by NT), and copy it to backup.
 		// Don't assume anything about the backup sector. Write it out from scratch using the primary MBR.
-		
-		// Fix up things here for OS9:
-		// Parts of OS9, at least drive setup, will detect a valid MBR (and ignore the APM) if:
-		// MBR.ValidMbr == MBR_VALID_SIGNATURE &&
-		// MbrCode[12] != 2 || MbrCode[11] != 0 &&
-		// any partition has a start that isn't sector zero, and is of type 1, 4, 5, or 6
-		// During partition setup, type 0xE is set for a FAT partition, NT text setup changes it back to 6.
-		// So this needs to be changed here if that's the case.
-		if (MbrPrimary.Partitions[1].Type == 6) {
-			ULONG StartChs = 0, EndChs = 0;
-			memcpy(&StartChs, MbrPrimary.Partitions[1].StartChs, sizeof(MbrPrimary.Partitions[1].StartChs));
-			memcpy(&EndChs, MbrPrimary.Partitions[1].EndChs, sizeof(MbrPrimary.Partitions[1].EndChs));
-			if (StartChs == 0 && EndChs == 0) {
-				// that is indeed the case.
-				MbrPrimary.Partitions[1].Type = 0xE;
-				Position.QuadPart = 0;
-				Status = Vectors->Seek(DeviceId, &Position, SeekAbsolute);
-				if (ARC_FAIL(Status)) break;
 
-				Count = 0;
-				Status = Vectors->Write(DeviceId, &MbrPrimary, sizeof(MbrPrimary), &Count);
-				if (ARC_SUCCESS(Status) && Count != sizeof(MbrPrimary)) Status = _EIO;
-				if (ARC_FAIL(Status)) break;
-			}
-		}
 		memset(MbrBackup.MbrCode, 0, sizeof(MbrBackup.MbrCode));
 		memcpy(&MbrBackup.MbrCode[1], "CD001", sizeof("CD001") - 1);
 		MbrpCopyTables(&MbrBackup, &MbrPrimary);
