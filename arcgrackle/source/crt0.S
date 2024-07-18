@@ -93,8 +93,8 @@ after_invalidate_tlb:
 	isync
 	
 	// set up a stack:
-	// we are at 1MB, use ram before it for stack.
-	// this way we can set up the first 1MB as firmware temporary.
+	// we are at 9MB, use ram before it for stack.
+	// this way we can set up 1MB at 8MB as firmware temporary.
 	lis r1, __executable_start@h
 	ori r1, r1, __executable_start@l
 	subi r1, r1, 8

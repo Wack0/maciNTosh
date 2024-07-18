@@ -4,7 +4,7 @@ OUTPUT_ARCH(powerpc:common)
 ENTRY(_start)
 
 SECTIONS {
-	. = 0x80100000;
+	. = 0x80900000;
 	__executable_start = .;
 
 	.text : ALIGN(8) { *(.text) *(.text.*) }

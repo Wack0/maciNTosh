@@ -307,7 +307,17 @@ int ArcMemInitDescriptors(ULONG PhysicalMemorySize) {
 	// Second chunk: ARC system table (4 pages)
 	INIT_DESCRIPTOR(1, BasePage, 4, MemoryFirmwarePermanent);
 	PageCount -= 4;
-	// Third chunk: ARC firmware stack, up to wherever we start at
+	// Third chunk: up to 8MB as free, as NT prior to (somewhere between 1234 and 1314) only maps that much by a BAT.
+	if ((BasePage + PageCount) < MegabytesInPages(8)) {
+		return -1;
+	}
+	else {
+		ULONG PagesFree = MegabytesInPages(8) - BasePage;
+		INIT_DESCRIPTOR(2, BasePage, PagesFree, MemoryFree);
+		PageCount -= PagesFree;
+	}
+
+	// Fourth chunk: ARC firmware stack, up to wherever we start at
 	extern BYTE __executable_start[], _end[];
 	ULONG ExeBase = ((ULONG)&__executable_start[0]) - 0x80000000;
 	ULONG ExeLength = ((ULONG)&_end[0]) - 0x80000000 - ExeBase;
@@ -315,23 +325,13 @@ int ArcMemInitDescriptors(ULONG PhysicalMemorySize) {
 	if ((ExeLength & (PAGE_SIZE - 1)) != 0) ExeLength += PAGE_SIZE;
 	ExeLength /= PAGE_SIZE;
 	PageCount -= (ExeBase - BasePage);
-	INIT_DESCRIPTOR(2, BasePage, ExeBase - BasePage, MemoryFirmwareTemporary);
-	// Fourth chunk: ARC firmware itself.
+	INIT_DESCRIPTOR(3, BasePage, ExeBase - BasePage, MemoryFirmwareTemporary);
+
+	// Fifth chunk: ARC firmware itself.
 	// This implementation does not hook the kernel (only slight patching to fix MSR stuff in bootloader/kernel)
 	// Thus, mark as firmware temporary as, for example, Motorola's implementation does.
-	INIT_DESCRIPTOR(3, BasePage, ExeLength, MemoryFirmwareTemporary);
+	INIT_DESCRIPTOR(4, BasePage, ExeLength, MemoryFirmwareTemporary);
 	PageCount -= ExeLength;
-	// Fifth chunk: up to 8MB as free, as NT prior to (somewhere between 1234 and 1314) only maps that much by a BAT.
-	if ((BasePage + PageCount) < MegabytesInPages(8)) {
-		INIT_DESCRIPTOR(4, BasePage, PageCount, MemoryFree);
-		PageCount = 0;
-	}
-	else {
-		ULONG PagesFree = MegabytesInPages(8) - BasePage;
-		INIT_DESCRIPTOR(4, BasePage, PagesFree, MemoryFree);
-		PageCount -= PagesFree;
-	}
-	if (PageCount == 0) return 0;
 
 	// Sixth chunk: up to 256MB as free, as crt0 only mapped that much by a BAT.
 	if ((BasePage + PageCount) < MegabytesInPages(256)) {
