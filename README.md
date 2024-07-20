@@ -33,7 +33,7 @@ NT HAL and drivers have no source present for now.
 
 ## Software compatibility
 
-NT4 only, currently. NT 3.51 may become compatible if HAL and drivers get ported to it. NT 3.5 will never be compatible, as it only supports PowerPC 601.
+NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel patches to run due to processor detection bugs. NT 3.5 will never be compatible, as it only supports PowerPC 601.
 (The additional suspend/hibernation features in NT 3.51 PMZ could be made compatible in theory but in practise would require all of the additional drivers for that to be reimplemented.)
 
 ## Installing
