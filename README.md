@@ -46,7 +46,7 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 
 * Boot your PowerMac from the burned optical media. When you get to ARC firmware menu, go to `Run firmware setup`, then `Repartition disk for NT installation`.
 * The disk partitioner will first let you enter partition size of the NT partition (up to the 16383x16x63 CHS limit, minus 32 MB ARC system partition + 1 MB for partition tables / MBR backup / OS 9 drivers / ARC environment variable storage, giving a maximum possible size of 8030 MB), then will drop to a menu allowing the creation of additional Mac partitions.
-	* If you choose a partition size over 2GB here, the partition will be formatted to NTFS.
+	* If you choose an NT partition size over 2GB, the partition will be formatted to NTFS.
 	* After adding a partition to the list, the only way to remove from the list is by cancelling the operation and starting the partitioner again.
 * After you have created all Mac partitions you want, choose `Finish partitioning and install`, and confirm the operation.
 * When finished, the partitioner will ask to `Press any key to restart`. Do so, and boot your PowerMac from the CD again.
