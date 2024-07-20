@@ -1274,7 +1274,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 
 	// Allocate heap space for laying out the FAT FS for the ARC system partition (0x10400 bytes)
 	enum {
-		SIZE_OF_SYS_PART_FAT_FS = 0x10400
+		SIZE_OF_SYS_PART_FAT_FS = 0x14200
 	};
 	PUCHAR SysPartFatFs = (PUCHAR)malloc(SIZE_OF_SYS_PART_FAT_FS);
 	if (SysPartFatFs == NULL) {
