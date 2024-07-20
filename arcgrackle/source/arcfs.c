@@ -1272,7 +1272,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	}
 	memset(Apm, 0, sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
 
-	// Allocate heap space for laying out the FAT FS for the ARC system partition (0x10400 bytes)
+	// Allocate heap space for laying out the FAT FS for the ARC system partition
 	enum {
 		SIZE_OF_SYS_PART_FAT_FS = 0x14200
 	};
