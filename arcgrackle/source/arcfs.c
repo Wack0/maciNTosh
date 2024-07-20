@@ -1223,6 +1223,11 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	Mbr.ApmDdt.SectorSize = REPART_SECTOR_SIZE;
 	Mbr.ApmDdt.SectorCount = (FileInfo.EndingAddress.QuadPart / REPART_SECTOR_SIZE);
 	if (Mbr.ApmDdt.SectorCount == 0) {
+		Api->CloseRoutine(hDrvwiki);
+		Api->CloseRoutine(hDrvptDR);
+		Api->CloseRoutine(hBootImg);
+		Api->CloseRoutine(hStage2);
+		Api->CloseRoutine(hStage1);
 		printf("Could not obtain sector count for disk\r\n");
 		return _EBADF; // we need to know size of disk here
 	}
@@ -1257,10 +1262,33 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	if (CountMacParts != 0) ApmPartitionsCount++;
 	PAPM_SECTOR Apm = (PAPM_SECTOR)malloc(sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
 	if (Apm == NULL) {
+		Api->CloseRoutine(hDrvwiki);
+		Api->CloseRoutine(hDrvptDR);
+		Api->CloseRoutine(hBootImg);
+		Api->CloseRoutine(hStage2);
+		Api->CloseRoutine(hStage1);
 		printf("Could not allocate memory for APM\r\n");
 		return _ENOMEM;
 	}
 	memset(Apm, 0, sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
+
+	// Allocate heap space for laying out the FAT FS for the ARC system partition (0x10400 bytes)
+	enum {
+		SIZE_OF_SYS_PART_FAT_FS = 0x10400
+	};
+	PUCHAR SysPartFatFs = (PUCHAR)malloc(SIZE_OF_SYS_PART_FAT_FS);
+	if (SysPartFatFs == NULL) {
+		free(Apm);
+		Api->CloseRoutine(hDrvwiki);
+		Api->CloseRoutine(hDrvptDR);
+		Api->CloseRoutine(hBootImg);
+		Api->CloseRoutine(hStage2);
+		Api->CloseRoutine(hStage1);
+		printf("Could not allocate memory for FAT filesystem\r\n");
+		return _ENOMEM;
+	}
+	memset(SysPartFatFs, 0, SIZE_OF_SYS_PART_FAT_FS);
+
 
 	Status = _ESUCCESS;
 	do {
@@ -1550,7 +1578,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 			break;
 		}
 
-		// Seek to MBR partition 3 and write a BPB there
+		// Seek to MBR partition 3 and write the empty FAT filesystem there
 		printf("Formatting FAT16 ARC system partition...\r\n");
 		static UCHAR s_Bpb32M[] = {
 			  0xEB, 0xFE, 0x90, 0x4D, 0x53, 0x44, 0x4F, 0x53, 0x35, 0x2E,
@@ -1566,30 +1594,23 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		memset(&Mbr, 0, sizeof(Mbr));
 		memcpy(Mbr.MbrCode, s_Bpb32M, sizeof(s_Bpb32M));
 		Mbr.ValidMbr = MBR_VALID_SIGNATURE;
+		// Copy the boot sector
+		memcpy(SysPartFatFs, &Mbr, sizeof(Mbr));
+		// Copy the two copies of the FAT
+		memset(&Mbr, 0, sizeof(Mbr));
+		memcpy(Mbr.MbrCode, s_FatEmpty, sizeof(s_FatEmpty));
+		memcpy(&SysPartFatFs[0x200], &Mbr, sizeof(Mbr));
+		memcpy(&SysPartFatFs[0x8200], &Mbr, sizeof(Mbr));
+
+
 		SeekOffset = INT32_TO_LARGE_INTEGER(ArcSystemPartitionSectorOffset);
 		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
 		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
 		if (ARC_SUCCESS(Status)) {
 			// Write to disk
 			Count = 0;
-			Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
-			if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
-		}
-		if (ARC_SUCCESS(Status)) {
-			// Write the two copies of the FAT
-			memset(&Mbr, 0, sizeof(Mbr));
-			memcpy(Mbr.MbrCode, s_FatEmpty, sizeof(s_FatEmpty));
-			Count = 0;
-			Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
-			if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
-			if (ARC_SUCCESS(Status)) {
-				SeekOffset.QuadPart += 0x8200;
-				Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
-				if (ARC_SUCCESS(Status)) {
-					Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
-					if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
-				}
-			}
+			Status = Vectors->Write(DeviceId, SysPartFatFs, SIZE_OF_SYS_PART_FAT_FS, &Count);
+			if (ARC_SUCCESS(Status) && Count != SIZE_OF_SYS_PART_FAT_FS) Status = _EIO;
 		}
 		if (ARC_FAIL(Status)) {
 			printf("Could not format ARC system partition\r\n");
@@ -1654,6 +1675,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		printf("Successfully written partition tables and installed ARC firmware.\r\n");
 	} while (false);
 
+	free(SysPartFatFs);
 	free(Apm);
 
 	Api->CloseRoutine(hDrvwiki);
