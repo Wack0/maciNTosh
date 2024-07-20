@@ -231,6 +231,8 @@ static DEVICE_ENTRY Cpu = {
     .Peer = &Pci,
 };
 
+static const char s_RootIdentifier[] = "Gossamer";
+
 // Root
 static DEVICE_ENTRY Root = {
     .Component = ARC_MAKE_COMPONENT(SystemClass, ArcSystem, ARC_DEVICE_NONE, 0, 0),
@@ -878,4 +880,8 @@ void ArcConfigInit(void) {
     // Set up the CPU identifier, if this is missing smss will terminate STATUS_OBJECT_NAME_NOT_FOUND
     Cpu.Component.Identifier = (size_t)s_CpuIdentifier;
     Cpu.Component.IdentifierLength = sizeof(s_CpuIdentifier);
+
+    // Set up the system / chipset identifier
+    Root.Component.Identifier = (size_t)s_RootIdentifier;
+    Root.Component.IdentifierLength = sizeof(s_RootIdentifier);
 }
