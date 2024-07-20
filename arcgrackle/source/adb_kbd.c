@@ -642,7 +642,7 @@ static bool AkpUpdateModifiers(PUSB_KBD_REPORT Report, UCHAR AdbScanCode, bool R
 
 static bool AkpConvertAdbUsb(PUSB_KBD_REPORT Report, UCHAR Layout, PUCHAR Data, UCHAR Offset, UCHAR Length) {
 	// Power button ends up in both bytes
-	if (Data[0] == Data[1] && (Data[0] & 0x80) == 0x7F) {
+	if (Data[0] == Data[1] && (Data[0] & ~0x80) == 0x7F) {
 		return AkpUpdateKey(Report, sc_AdbToUsbTable[0x7F], (Data[0] & 0x80) != 0);
 	}
 
@@ -678,11 +678,14 @@ static bool AkpConvertAdbUsb(PUSB_KBD_REPORT Report, UCHAR Layout, PUCHAR Data, 
 }
 
 static void AdbKbdReceivePart(UCHAR Layout, PUCHAR Data, UCHAR Offset, UCHAR Length) {
+	// ARC only likes one key-input down at a time:
+	memset(s_Report.KeyCode, 0, sizeof(s_Report.KeyCode));
 	BOOLEAN Changed = AkpConvertAdbUsb(&s_Report, Layout, Data, Offset, Length);
 
 	if (Changed) {
 		KBDOnEvent(&s_Report);
 	}
+	else if (s_Report.KeyCode[0] == 0) s_LastKeycode = 0;
 }
 
 
@@ -699,18 +702,12 @@ static adb_dev_t *my_adb_dev = NULL;
 static bool adb_kbd_poll(void) {
 	uint8_t buffer[ADB_BUF_SIZE];
 	adb_dev_t* dev = my_adb_dev;
-	adb_kbd_t* kbd;
-	int key;
-	int ret;
 
 	if (dev == NULL) return false;
 
-	kbd = dev->state;
-
-	/* Get saved state */
-	ret = -1;
 	if (adb_reg_get(dev, 0, buffer) != 2)
 		return false;
+
 	if ((buffer[0] & ~0x80) != (buffer[1] & ~0x80)) {
 		AdbKbdReceivePart(dev->subType, buffer, 0, 2);
 	}
@@ -720,13 +717,13 @@ static bool adb_kbd_poll(void) {
 		AdbKbdReceivePart(dev->subType, buffer, 1, 1);
 	}
 
-	return ret != 0;
+	return true;
 }
 
 
 void* adb_kbd_new(char* path, void* private)
 {
-	char buf[64];
+	uint8_t buf[64];
 	adb_kbd_t* kbd;
 	adb_dev_t* dev = private;
 	kbd = (adb_kbd_t*)malloc(sizeof(adb_kbd_t));
@@ -738,6 +735,9 @@ void* adb_kbd_new(char* path, void* private)
 		dev->state = kbd;
 		dev->subType = AkpGetKeyboardLayout(dev->subType);
 		my_adb_dev = dev;
+
+		// Ensure the keyboard buffer is empty
+		while (adb_reg_get(dev, 0, buf) == 2) {}
 	}
 
 	return kbd;
