@@ -744,9 +744,13 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	printf("Init ide...\r\n");
 	int macio_ide_init(uint32_t addr, int nb_channels);
 	macio_ide_init((ULONG) PciPhysToVirt(Desc->MacIoStart), 2);
-	printf("Early driver init done.\r\n");
 
-	// TODO: SCSI?
+	// SCSI controller.
+	printf("Init scsi...\r\n");
+	int mesh_init(uint32_t addr);
+	mesh_init((ULONG)PciPhysToVirt(Desc->MacIoStart + 0x10000));
+
+	printf("Early driver init done.\r\n");
 
 	// Zero out the entire runtime area.
 	memset(s_RuntimeArea, 0, sizeof(*s_RuntimeArea));

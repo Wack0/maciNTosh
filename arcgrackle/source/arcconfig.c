@@ -165,6 +165,13 @@ static DEVICE_ENTRY Ide = {
     .Parent = &MacIO
 };
 
+// SCSI controller
+static DEVICE_ENTRY Scsi = {
+    .Component = ARC_MAKE_COMPONENT(AdapterClass, ScsiAdapter, ARC_DEVICE_INPUT | ARC_DEVICE_OUTPUT, 0, 0),
+    .Parent = &MacIO,
+    .Peer = &Ide
+};
+
 // Video
 static DEVICE_ENTRY Video = {
     .Component = ARC_MAKE_COMPONENT(ControllerClass, DisplayController, ARC_DEVICE_OUTPUT | ARC_DEVICE_CONSOLE_OUT, 0, 0),
@@ -177,7 +184,7 @@ static DEVICE_ENTRY Video = {
 static DEVICE_ENTRY Keyboard = {
     .Component = ARC_MAKE_COMPONENT(PeripheralClass, KeyboardPeripheral, ARC_DEVICE_INPUT | ARC_DEVICE_CONSOLE_IN, 0, 0),
     .Parent = &MacIO,
-    .Peer = &Ide,
+    .Peer = &Scsi,
     .Vectors = &KeyboardVectors
 };
 
@@ -263,6 +270,7 @@ static PDEVICE_ENTRY s_DefaultComponents[] = {
     
     // MacIO
     &Keyboard,
+    &Scsi,
     &Ide,
 };
 

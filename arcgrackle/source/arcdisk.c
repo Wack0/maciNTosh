@@ -17,6 +17,7 @@
 #include "usbmsc.h"
 #include "usbdisk.h"
 #include "ide.h"
+#include "scsi_mesh.h"
 
 // ARC firmware support for disks:
 // USB mass storage, and IDE
@@ -49,9 +50,11 @@ static IDE_DEVICE_MOUNT_TABLE s_IdeTable[8] = { 0 };
 // use scsi(0) for USB, because USB mass storage is SCSI lol
 static char s_UsbControllerPath[] = "multi(0)scsi(0)";
 static char s_IdeControllerPath[] = "multi(1)multi(0)";
+static char s_ScsiControllerPath[] = "multi(1)scsi(0)";
 
 static char s_UsbComponentName[] = "OHCI";
 static char s_IdeComponentName[] = "MIO_IDE";
+static char s_ScsiComponentName[] = "MESH_SCSI";
 
 extern bool g_UsbInitialised;
 extern bool g_IdeInitialised;
@@ -149,6 +152,15 @@ static ARC_STATUS IdeRead(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG Co
 static ARC_STATUS IdeWrite(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG CountSectors, PVOID Buffer);
 static ARC_STATUS IdeGetReadStatus(ULONG FileId);
 static ARC_STATUS IdeGetFileInformation(ULONG FileId, PFILE_INFORMATION FileInfo);
+
+static ARC_STATUS ScsiOpen(PCHAR OpenPath, OPEN_MODE OpenMode, PULONG FileId);
+static ARC_STATUS ScsiClose(ULONG FileId);
+static ARC_STATUS ScsiMount(PCHAR MountPath, MOUNT_OPERATION Operation);
+static ARC_STATUS ScsiSeek(ULONG FileId, PLARGE_INTEGER Offset, SEEK_MODE SeekMode);
+static ARC_STATUS ScsiRead(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG CountSectors, PVOID Buffer);
+static ARC_STATUS ScsiWrite(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG CountSectors, PVOID Buffer);
+static ARC_STATUS ScsiGetReadStatus(ULONG FileId);
+static ARC_STATUS ScsiGetFileInformation(ULONG FileId, PFILE_INFORMATION FileInfo);
 
 // USB controller device vectors.
 static const DEVICE_VECTORS UsbDiskVectors = {
@@ -558,7 +570,7 @@ static const DEVICE_VECTORS IdeVectors = {
 	.GetDirectoryEntry = NULL
 };
 
-// SD image device functions.
+// IDE device functions.
 
 static ARC_STATUS IdeGetSectorSize(ULONG FileId, PULONG SectorSize) {
 	// Get the file table entry.
@@ -638,7 +650,11 @@ static ARC_STATUS IdeOpen(PCHAR OpenPath, OPEN_MODE OpenMode, PULONG FileId) {
 
 	// Open the ide device.
 	PIDE_DRIVE IdeDrive = ob_ide_open(Channel, Unit);
-	if (IdeDrive == NULL) return _ENODEV;
+	if (IdeDrive == NULL) {
+		// try again for optical drive
+		if (IsCdRom) IdeDrive = ob_ide_open(Channel, Unit);
+		if (IdeDrive == NULL) return _ENODEV;
+	}
 	FileEntry->u.DiskContext.IdeDrive = IdeDrive;
 	FileEntry->u.DiskContext.MaxSectorTransfer = IdeDrive->max_sectors;
 
@@ -733,6 +749,186 @@ static ARC_STATUS IdeGetFileInformation(ULONG FileId, PFILE_INFORMATION FileInfo
 	return _ESUCCESS;
 }
 
+// SCSI device vectors.
+static const DEVICE_VECTORS ScsiVectors = {
+	.Open = ScsiOpen,
+	.Close = ScsiClose,
+	.Mount = ScsiMount,
+	.Read = DeblockerRead,
+	.Write = DeblockerWrite,
+	.Seek = DeblockerSeek,
+	.GetReadStatus = ScsiGetReadStatus,
+	.GetFileInformation = ScsiGetFileInformation,
+	.SetFileInformation = NULL,
+	.GetDirectoryEntry = NULL
+};
+
+// SCSI device functions.
+
+static ARC_STATUS ScsiGetSectorSize(ULONG FileId, PULONG SectorSize) {
+	// Get the file table entry.
+	PARC_FILE_TABLE FileEntry = ArcIoGetFile(FileId);
+	if (FileEntry == NULL) return _EFAULT;
+
+	PMESH_SCSI_DEVICE Drive = FileEntry->u.DiskContext.ScsiDrive;
+	if (Drive == NULL) return _EFAULT;
+
+	*SectorSize = Drive->BytesPerSector;
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiOpen(PCHAR OpenPath, OPEN_MODE OpenMode, PULONG FileId) {
+	// Ensure the path starts with s_ScsiControllerPath
+	if (memcmp(OpenPath, s_ScsiControllerPath, sizeof(s_ScsiControllerPath) - 1) != 0) return _ENODEV;
+	PCHAR DevicePath = &OpenPath[sizeof(s_ScsiControllerPath) - 1];
+	// Next device must be disk(x) or cdrom(x), x is the SCSI ID
+	ULONG DeviceId = 0, ScsiLun = 0;
+	bool IsCdRom = false;
+	//bool IsFloppy = false;
+	if (!ArcDeviceParse(&DevicePath, DiskController, &DeviceId)) {
+		// Not disk(x), check for cdrom(x)
+		IsCdRom = true;
+		if (!ArcDeviceParse(&DevicePath, CdromController, &DeviceId)) {
+			// Not cdrom either, can't handle this device path
+			return _ENODEV;
+		}
+	}
+	if (DeviceId >= 8) return _ENODEV;
+
+	// For cdrom, next device must be fdisk(x)
+	// For disk, next device must be rdisk(x)
+	// x is the logical unit number
+	if (IsCdRom) {
+		if (!ArcDeviceParse(&DevicePath, FloppyDiskPeripheral, &ScsiLun)) {
+			return _ENODEV;
+		}
+		// should be the last device, but partition is still technically valid here.
+	}
+	else {
+		if (!ArcDeviceParse(&DevicePath, DiskPeripheral, &ScsiLun)) {
+			return _ENODEV;
+		}
+	}
+
+	if (ScsiLun >= 8) return _ENODEV;
+
+	// If this is a cdrom, it can only be mounted ro.
+	if (IsCdRom && OpenMode != ArcOpenReadOnly) return _EACCES;
+
+	bool IncludesPartition = false;
+	ULONG PartitionNumber = 0;
+	// Does the caller want a partition?
+	if (*DevicePath != 0) {
+		if (!ArcDeviceParse(&DevicePath, PartitionEntry, &PartitionNumber)) {
+			return _ENODEV;
+		}
+		else {
+			// partition 0 means whole disk, and is the only valid partition for cdrom
+			if (IsCdRom && PartitionNumber != 0) return _ENODEV;
+			IncludesPartition = PartitionNumber != 0;
+		}
+	}
+
+	// Get the file table entry.
+	PARC_FILE_TABLE FileEntry = ArcIoGetFileForOpen(*FileId);
+	if (FileEntry == NULL) return _EFAULT;
+	// Zero the disk context.
+	memset(&FileEntry->u.DiskContext, 0, sizeof(FileEntry->u.DiskContext));
+
+	// Open the scsi device.
+	PMESH_SCSI_DEVICE ScsiDrive = mesh_open_drive(DeviceId, ScsiLun);
+	if (ScsiDrive == NULL) {
+		// try again if optical drive
+		if (IsCdRom) ScsiDrive = mesh_open_drive(DeviceId, ScsiLun);
+		if (ScsiDrive == NULL) return _ENODEV;
+	}
+	FileEntry->u.DiskContext.ScsiDrive = ScsiDrive;
+	FileEntry->u.DiskContext.MaxSectorTransfer = 0xFFFF;
+
+	ULONG SectorSize = ScsiDrive->BytesPerSector;
+
+	// Stash the GetSectorSize ptr into the file table.
+	FileEntry->GetSectorSize = ScsiGetSectorSize;
+	FileEntry->ReadSectors = ScsiRead;
+	FileEntry->WriteSectors = ScsiWrite;
+
+	ULONG DiskSectors = ScsiDrive->NumberOfSectors;
+	ULONG PartitionSectors = DiskSectors;
+	ULONG PartitionSector = 0;
+	// Set it up for the whole disk so ArcFsPartitionObtain can work.
+	FileEntry->u.DiskContext.SectorStart = PartitionSector;
+	FileEntry->u.DiskContext.SectorCount = PartitionSectors;
+
+	ARC_STATUS Status;
+	if (IncludesPartition) {
+		// Mark the file as open so ArcFsPartitionObtain can work.
+		FileEntry->Flags.Open = 1;
+		Status = ArcFsPartitionObtain(FileEntry->DeviceEntryTable, *FileId, PartitionNumber, SectorSize, &PartitionSector, &PartitionSectors);
+		FileEntry->Flags.Open = 0;
+		if (ARC_FAIL(Status)) {
+			PartitionSector = 0;
+			PartitionSectors = DiskSectors;
+		}
+	}
+	FileEntry->u.DiskContext.SectorStart = PartitionSector;
+	FileEntry->u.DiskContext.SectorCount = PartitionSectors;
+
+	FileEntry->Position = 0;
+
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiClose(ULONG FileId) {
+	PARC_FILE_TABLE FileEntry = ArcIoGetFile(FileId);
+	if (FileEntry == NULL) return _EBADF;
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiMount(PCHAR MountPath, MOUNT_OPERATION Operation) { return _EINVAL; }
+
+
+static ARC_STATUS ScsiRead(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG CountSectors, PVOID Buffer) {
+	bool Success = mesh_read_blocks(FileEntry->u.DiskContext.ScsiDrive, Buffer, StartSector, CountSectors) == CountSectors;
+	if (!Success) return _EIO;
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiWrite(PARC_FILE_TABLE FileEntry, ULONG StartSector, ULONG CountSectors, PVOID Buffer) {
+	bool Success = mesh_write_blocks(FileEntry->u.DiskContext.ScsiDrive, Buffer, StartSector, CountSectors) == CountSectors;
+	if (!Success) return _EIO;
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiGetReadStatus(ULONG FileId) {
+	PARC_FILE_TABLE FileEntry = ArcIoGetFile(FileId);
+	if (FileEntry == NULL) return _EBADF;
+	PMESH_SCSI_DEVICE Drive = FileEntry->u.DiskContext.ScsiDrive;
+	if (Drive == NULL) return _EBADF;
+	int64_t LastByte = FileEntry->u.DiskContext.SectorCount;
+	LastByte *= Drive->BytesPerSector;
+	if (FileEntry->Position >= LastByte) return _EAGAIN;
+	return _ESUCCESS;
+}
+
+static ARC_STATUS ScsiGetFileInformation(ULONG FileId, PFILE_INFORMATION FileInfo) {
+	PARC_FILE_TABLE FileEntry = ArcIoGetFile(FileId);
+	if (FileEntry == NULL) return _EBADF;
+	PMESH_SCSI_DEVICE Drive = FileEntry->u.DiskContext.ScsiDrive;
+	if (Drive == NULL) return _EBADF;
+	ULONG SectorSize = Drive->BytesPerSector;
+
+	FileInfo->CurrentPosition.QuadPart = FileEntry->Position;
+	int64_t Temp64 = FileEntry->u.DiskContext.SectorStart;
+	Temp64 *= SectorSize;
+	FileInfo->StartingAddress.QuadPart = Temp64;
+	Temp64 = FileEntry->u.DiskContext.SectorCount;
+	Temp64 *= SectorSize;
+	FileInfo->EndingAddress.QuadPart = Temp64;
+	FileInfo->Type = DiskPeripheral;
+
+	return _ESUCCESS;
+}
+
 static bool ArcDiskUsbInit() {
 	// Get the disk component.
 	PCONFIGURATION_COMPONENT DiskComponent = ARC_VENDOR_VECTORS()->GetComponentRoutine(s_UsbControllerPath);
@@ -765,6 +961,48 @@ static bool ArcDiskIdeInit() {
 	
 	DiskDevice->Component.Identifier = (size_t)s_IdeComponentName;
 	DiskDevice->Component.IdentifierLength = sizeof(s_IdeComponentName);
+	return true;
+}
+
+static bool ArcDiskScsiInit() {
+	// Get the disk component.
+	PCONFIGURATION_COMPONENT DiskComponent = ARC_VENDOR_VECTORS()->GetComponentRoutine(s_ScsiControllerPath);
+	// Ensure that the component obtained was really the disk component.
+	if (DiskComponent->Class != AdapterClass) return false;
+	if (DiskComponent->Type != ScsiAdapter) return false;
+	if (DiskComponent->Key != 0) return false;
+
+	// We really have a pointer to a device entry.
+	PDEVICE_ENTRY DiskDevice = (PDEVICE_ENTRY)DiskComponent;
+
+	DiskDevice->Vectors = &ScsiVectors;
+
+	DiskDevice->Component.Identifier = (size_t)s_ScsiComponentName;
+	DiskDevice->Component.IdentifierLength = sizeof(s_ScsiComponentName);
+	return true;
+}
+
+static bool ArcDiskAddDeviceTwoKeys(PVENDOR_VECTOR_TABLE Api, PDEVICE_ENTRY BaseController, CONFIGURATION_TYPE Controller, CONFIGURATION_TYPE Disk, ULONG KeyController, ULONG KeyDisk) {
+	// Create controller child if it does not exist
+	PDEVICE_ENTRY ControllerDevice = NULL;
+	for (PDEVICE_ENTRY Child = (PDEVICE_ENTRY)Api->GetChildRoutine(&BaseController->Component); Child != NULL; Child = (PDEVICE_ENTRY)Api->GetPeerRoutine(&Child->Component)) {
+		if (Child->Component.Class != ControllerClass) continue;
+		if (Child->Component.Type != Controller) continue;
+		if (Child->Component.Key != KeyController) continue;
+		ControllerDevice = Child;
+		break;
+	}
+	if (ControllerDevice == NULL) {
+		CONFIGURATION_COMPONENT ControllerConfig = ARC_MAKE_COMPONENT(ControllerClass, Controller, ARC_DEVICE_INPUT | ARC_DEVICE_OUTPUT, KeyController, 0);
+		ControllerDevice = (PDEVICE_ENTRY)Api->AddChildRoutine(&BaseController->Component, &ControllerConfig, NULL);
+		if (ControllerDevice == NULL) return false; // can't do anything if AddChild did fail
+		ControllerDevice->Vectors = BaseController->Vectors;
+	}
+
+	CONFIGURATION_COMPONENT DiskConfig = ARC_MAKE_COMPONENT(PeripheralClass, Disk, ARC_DEVICE_INPUT | ARC_DEVICE_OUTPUT, KeyDisk, 0);
+	PDEVICE_ENTRY DiskDevice = (PDEVICE_ENTRY)Api->AddChildRoutine(&ControllerDevice->Component, &DiskConfig, NULL);
+	if (DiskDevice == NULL) return false; // can't do anything if AddChild did fail
+	DiskDevice->Vectors = BaseController->Vectors;
 	return true;
 }
 
@@ -805,6 +1043,7 @@ ARC_STATUS ArcDiskInitRamdisk(void);
 
 void ArcDiskInit() {
 	ArcDiskIdeInit();
+	ArcDiskScsiInit();
 	ArcDiskUsbInit();
 
 	printf("Scanning disk devices...\r\n");
@@ -817,6 +1056,7 @@ void ArcDiskInit() {
 	PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
 	PDEVICE_ENTRY UsbController = (PDEVICE_ENTRY) Api->GetComponentRoutine(s_UsbControllerPath);
 	PDEVICE_ENTRY IdeController = (PDEVICE_ENTRY) Api->GetComponentRoutine(s_IdeControllerPath);
+	PDEVICE_ENTRY ScsiController = (PDEVICE_ENTRY) Api->GetComponentRoutine(s_ScsiControllerPath);
 
 	// IDE devices first.
 	memset(s_IdeTable, 0, sizeof(s_IdeTable));
@@ -903,6 +1143,75 @@ void ArcDiskInit() {
 				ArcEnvSetDevice(EnvKeyHd, DeviceName);
 				printf("%s - IDE channel %d disk %d (partition %d)\r\n", EnvKeyHd, ChannelNumber, DiskNumber, part);
 			}
+		}
+	}
+
+	// Next SCSI disks.
+	for (PMESH_SCSI_DEVICE ScsiDev = mesh_get_first_device(); ScsiDev != NULL; ScsiDev = ScsiDev->Next) {
+		// Is this an optical drive?
+		if (ScsiDev->IsCdRom) {
+			if (CdromCount < 100) {
+				// Add the cdrom device.
+				if (!ArcDiskAddDeviceTwoKeys(Api, ScsiController, CdromController, FloppyDiskPeripheral, ScsiDev->TargetId, ScsiDev->Lun)) continue;
+
+				EnvKeyCd[3] = (CdromCount % 10) + '0';
+				EnvKeyCd[2] = ((CdromCount / 10) % 10) + '0';
+				CdromCount++;
+				snprintf(DeviceName, sizeof(DeviceName), "%scdrom(%u)fdisk(%u)", s_ScsiControllerPath, ScsiDev->TargetId, ScsiDev->Lun);
+				ArcEnvSetDevice(EnvKeyCd, DeviceName);
+				printf("%s - SCSI ID %d LUN %d (raw disk)\r\n", EnvKeyCd, ScsiDev->TargetId, ScsiDev->Lun);
+			}
+			continue;
+		}
+
+		// Hard disk
+		if (DiskCount >= 100) continue;
+
+		// Add the raw drive.
+		if (!ArcDiskAddDeviceTwoKeys(Api, ScsiController, DiskController, DiskPeripheral, ScsiDev->TargetId, ScsiDev->Lun)) continue;
+		EnvKeyHdRaw[3] = (DiskCount % 10) + '0';
+		EnvKeyHdRaw[2] = ((DiskCount / 10) % 10) + '0';
+		EnvKeyHd[3] = EnvKeyHdRaw[3];
+		EnvKeyHd[2] = EnvKeyHdRaw[2];
+		ULONG DiskIndex = DiskCount;
+		DiskCount++;
+		snprintf(DeviceName, sizeof(DeviceName), "%sdisk(%u)rdisk(%u)", s_ScsiControllerPath, ScsiDev->TargetId, ScsiDev->Lun);
+		ULONG IdeHdIndex = IdeIndex;
+		IdeIndex++;
+		ArcEnvSetDevice(EnvKeyHdRaw, DeviceName);
+		printf("%s - SCSI ID %d LUN %d\r\n", EnvKeyHdRaw, ScsiDev->TargetId, ScsiDev->Lun);
+
+		s_CountPartitions[DiskIndex] = 0;
+		s_SizeDiskMb[DiskIndex] = 0;
+
+		// Attempt to fix the MBR now. Will fail if it doesn't look like the expected partition table layout.
+		// We just added the device, we can open it:
+		U32LE DeviceId;
+		if (ARC_FAIL(Api->OpenRoutine(DeviceName, ArcOpenReadWrite, &DeviceId))) continue;
+		ArcFsRestoreMbr(DeviceId.v);
+		// Attempt to get the number of MBR partitions.
+		if (ARC_FAIL(ArcFsPartitionCount(DeviceId.v, &s_CountPartitions[DiskIndex]))) s_CountPartitions[DiskIndex] = 0;
+		// And the size of the disk.
+		{
+			FILE_INFORMATION Info;
+			if (ARC_SUCCESS(Api->GetFileInformationRoutine(DeviceId.v, &Info))) s_SizeDiskMb[DiskIndex] = (ULONG)(Info.EndingAddress.QuadPart / 0x100000);
+		}
+		Api->CloseRoutine(DeviceId.v);
+
+		for (ULONG part = 1; part <= s_CountPartitions[DiskIndex]; part++) {
+			snprintf(DeviceName, sizeof(DeviceName), "%sdisk(%u)rdisk(%u)partition(%d)", s_ScsiControllerPath, ScsiDev->TargetId, ScsiDev->Lun, part);
+			if (part < 10) {
+				EnvKeyHd[5] = part + '0';
+				EnvKeyHd[6] = ':';
+				EnvKeyHd[7] = 0;
+			}
+			else {
+				EnvKeyHd[6] = (part % 10) + '0';
+				EnvKeyHd[5] = ((part / 10) % 10) + '0';
+				EnvKeyHd[7] = ':';
+			}
+			ArcEnvSetDevice(EnvKeyHd, DeviceName);
+			printf("%s - SCSI ID %d LUN %d (partition %d)\r\n", EnvKeyHd, ScsiDev->TargetId, ScsiDev->Lun, part);
 		}
 	}
 

@@ -18,6 +18,7 @@ typedef struct _DISK_CONTEXT {
     union {
         struct _USB_DEVICE_MOUNT_TABLE* DeviceMount; // USB device mount entry
         struct ide_drive* IdeDrive; // IDE drive entry
+        struct _MESH_SCSI_DEVICE* ScsiDrive; // SCSI drive entry
     };
     ULONG SectorStart; // Start sector of partition.
     ULONG SectorCount; // Number of sectors of partition.
