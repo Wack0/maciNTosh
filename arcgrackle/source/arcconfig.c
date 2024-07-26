@@ -203,11 +203,20 @@ static DEVICE_ENTRY MacIO = {
     .Child = &Keyboard,
     .ConfigData = &s_MioResource.Header,
 };
+
+// Dummy PCI bus, some NT code only will check the number of PCI buses present in the ARC device tree.
+// If this system only has one PCI bus it's ok.
+static DEVICE_ENTRY Pci2 = {
+    .Component = ARC_MAKE_COMPONENT(AdapterClass, MultiFunctionAdapter, ARC_DEVICE_NONE, 2, 0),
+    .Parent = &Root,
+    .Peer = &MacIO,
+};
+
 // PCI bus.
 static DEVICE_ENTRY Pci = {
     .Component = ARC_MAKE_COMPONENT(AdapterClass, MultiFunctionAdapter, ARC_DEVICE_NONE, 0, 0),
     .Parent = &Root,
-    .Peer = &MacIO,
+    .Peer = &Pci2,
     .Child = &Video
 };
 
@@ -254,6 +263,7 @@ static PDEVICE_ENTRY s_DefaultComponents[] = {
     // First level
     &Cpu,
     &Pci,
+    &Pci2,
     &MacIO,
 
     // Cpu
@@ -876,6 +886,8 @@ void ArcConfigInit(void) {
     // Set up the PCI bus identifier, used by NT kernel
     Pci.Component.Identifier = (size_t)s_PciIdentifier;
     Pci.Component.IdentifierLength = sizeof(s_PciIdentifier);
+    Pci2.Component.Identifier = (size_t)s_PciIdentifier;
+    Pci2.Component.IdentifierLength = sizeof(s_PciIdentifier);
     // ...and MIO identifier
     MacIO.Component.Identifier = (size_t)s_MioIdentifier;
     MacIO.Component.IdentifierLength = sizeof(s_MioIdentifier);
