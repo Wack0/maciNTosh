@@ -6,6 +6,7 @@
 typedef enum _MIO_TYPE {
 	MIO_UNKNOWN,
 	MIO_GRANDCENTRAL,
+	MIO_OHARE,
 	MIO_PADDINGTON,
 	MIO_KEYLARGO
 } MIO_TYPE;
@@ -16,7 +17,7 @@ typedef enum _MIO_TYPE {
 // +0x11000 -
 // +0x12000 - legacy serial
 // +0x13000 - serial
-// +0x14000 - davbus
+// +0x14000 - audio
 // +0x15000 - timer
 // +0x16000 - pxi
 // +0x17000 -
@@ -34,15 +35,37 @@ typedef enum _MIO_TYPE {
 
 // PADDINGTON (and HEATHROW) has:
 // (custom interrupt controller, two of them)
-// +0x10000 - scsi
+// +0x10000 - scsi (MESH)
 // +0x11000 - ethernet
 // +0x12000 - legacy serial
 // +0x13000 - serial
-// +0x14000 - davbus
+// +0x14000 - audio
 // +0x15000 - fdc
 // +0x16000 - pxi
 // +0x17000 -
 // +0x18000 - i2c
+// +0x19000 -
+// +0x1a000 -
+// +0x1b000 -
+// +0x1c000 -
+// +0x1d000 -
+// +0x1e000 -
+// +0x1f000 -
+// +0x20000 - primary ata (irq 13, dma 11, dmairq 2)
+// +0x21000 - secondary ata (irq 14, dma 12, dmairq 3)
+// +0x60000 - nvram 8KB
+
+// O'HARE has:
+// (custom interrupt controller, one of them)
+// +0x10000 - scsi (MESH)
+// +0x11000 -
+// +0x12000 - legacy serial
+// +0x13000 - serial
+// +0x14000 - audio
+// +0x15000 - fdc
+// +0x16000 - pxi
+// +0x17000 -
+// +0x18000 -
 // +0x19000 -
 // +0x1a000 -
 // +0x1b000 -
@@ -60,11 +83,11 @@ typedef enum _MIO_TYPE {
 // +0x11000 - ethernet, Am79C940 compatible
 // +0x12000 - legacy serial
 // +0x13000 - serial
-// +0x14000 - davbus
+// +0x14000 - audio
 // +0x15000 - fdc
 // +0x16000 - pxi
 // +0x17000 - 
-// +0x18000 - internal scsi, 35C94 derivative
+// +0x18000 - internal scsi, 35C94 derivative (MESH)
 // +0x19000 - ethernet ROM / mac address, mirrored across the entire space
 // +0x1a000 - board registers
 // +0x1b000 - dac
@@ -115,6 +138,7 @@ static MIO_TYPE MioDoDetect(PPHYSICAL_ADDRESS BaseAddress) {
 			USHORT DeviceID = PciData->DeviceID;
 			if (
 				DeviceID != 0x0002 && // grandcentral
+				DeviceID != 0x0007 && // o'hare
 				DeviceID != 0x0010 && // heathrow
 				DeviceID != 0x0017 && // paddington
 				DeviceID != 0x0022 && // keylargo
@@ -128,6 +152,7 @@ static MIO_TYPE MioDoDetect(PPHYSICAL_ADDRESS BaseAddress) {
 			
 			// this is a supported MIO controller.
 			if (DeviceID == 0x0002) RetVal = MIO_GRANDCENTRAL;
+			else if (DeviceID == 0x0x0007) RetVal = MIO_OHARE;
 			else RetVal = (DeviceID < 0x0020) ? MIO_PADDINGTON : MIO_KEYLARGO;
 			if (BaseAddress != NULL) BaseAddress->LowPart = PciData->u.type0.BaseAddresses[0];
 			return RetVal;
