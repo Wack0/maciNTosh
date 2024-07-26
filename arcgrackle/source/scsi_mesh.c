@@ -149,7 +149,7 @@ static void mesh_clear_fifo(void) {
 static ULONG mesh_read_fifo(PVOID Buffer, ULONG Length) {
 	PUCHAR Buffer8 = (PUCHAR)Buffer;
 	//mesh_do_timeout(true);
-	for (ULONG i = 0; i < Length;) {
+	while (Length != 0) {
 		// Wait on fifo.
 		while (s_Mesh->FifoCount == 0) {
 			if (mesh_do_timeout(false)) return ((ULONG)Buffer8 - (ULONG)Buffer);
@@ -159,14 +159,26 @@ static ULONG mesh_read_fifo(PVOID Buffer, ULONG Length) {
 		if (FifoCount > Length) FifoCount = Length;
 		MmioReadBuf8(&s_Mesh->Fifo, Buffer8, FifoCount);
 		Buffer8 += FifoCount;
-		i += FifoCount;
 		Length -= FifoCount;
 	}
 	return ((ULONG)Buffer8 - (ULONG)Buffer);
 }
 
 static ULONG mesh_write_fifo(PVOID Buffer, ULONG Length) {
-	MmioWriteBuf8(&s_Mesh->Fifo, (PUCHAR)Buffer, Length);
+	PUCHAR Buffer8 = (PUCHAR)Buffer;
+	while (Length != 0) {
+		// Wait on fifo to be empty.
+		while (s_Mesh->FifoCount != 0) {
+			if (mesh_do_timeout(false)) return ((ULONG)Buffer8 - (ULONG)Buffer);
+		}
+		// Write from the buffer into the fifo
+		UCHAR FifoCount = 0x10;
+		if (FifoCount > Length) FifoCount = Length;
+		MmioWriteBuf8(&s_Mesh->Fifo, (PUCHAR)Buffer, FifoCount);
+		Buffer8 += FifoCount;
+		Length -= FifoCount;
+	}
+	return ((ULONG)Buffer8 - (ULONG)Buffer);
 }
 
 static void mesh_reset(void) {
@@ -308,6 +320,7 @@ static UCHAR mesh_run_scsi_command(UCHAR TargetId, PUCHAR ScsiCmd, ULONG ScsiCmd
 		case SEQ_CMD_CMD:
 			if (Buffer != NULL && TransferLength32 != 0) {
 				// Open Firmware driver uses DMA here, we'll use PIO.
+
 				if (Write) {
 					mesh_set_tx_count(TransferLength);
 					s_Mesh->Command = SEQ_CMD_DATAOUT;
@@ -317,7 +330,6 @@ static UCHAR mesh_run_scsi_command(UCHAR TargetId, PUCHAR ScsiCmd, ULONG ScsiCmd
 					// for data in i think we have to just keep going filling the FIFO buffer manually when not using DMA
 					// MESH specs for Hydra says 16-byte FIFO
 					// No idea if it's different for heathrow but for compatibility (GC/OHare uses same SCSI block as Hydra) just use that
-					// Ensure the FIFO is clear first
 
 					TxCount = TransferLength;
 					if (TxCount > 0x10) TxCount = 0x10;
