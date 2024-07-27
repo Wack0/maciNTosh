@@ -647,7 +647,7 @@ static bool ArcConfigKeyEquals(PDEVICE_ENTRY Lhs, PDEVICE_ENTRY Rhs) {
 
 bool ArcConfigKeyExists(PDEVICE_ENTRY Device) {
     for (ULONG def = 0; def < sizeof(s_DefaultComponents) / sizeof(s_DefaultComponents[0]); def++) {
-        PDEVICE_ENTRY This = &s_DefaultComponents[def];
+        PDEVICE_ENTRY This = s_DefaultComponents[def];
         if (This == Device) continue;
         if (!ArcConfigKeyEquals(Device, This)) continue;
         return true;
