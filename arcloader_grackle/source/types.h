@@ -68,8 +68,8 @@ typedef union ARC_LE _LARGE_INTEGER {
     int64_t QuadPart;
 } LARGE_INTEGER, * PLARGE_INTEGER;
 
-typedef union _LARGE_INTEGER_BIG {
-    struct {
+typedef union ARC_BE _LARGE_INTEGER_BIG {
+    struct ARC_BE {
         LONG HighPart;
         ULONG LowPart;
     };

@@ -27,7 +27,7 @@ typedef union _OF_ARGUMENT {
 	OFIHANDLE Instance;
 } OF_ARGUMENT, *POF_ARGUMENT;
 
-typedef struct _OF_REGISTER {
+typedef struct ARC_BE _OF_REGISTER {
 	LARGE_INTEGER_BIG PhysicalAddress;
 	ULONG Size;
 } OF_REGISTER, *POF_REGISTER;
