@@ -123,7 +123,11 @@ static ULONG MempGetKernelRamSize(OFHANDLE Handle) {
 		ULONG ThisBasePage = Memory[i].PhysicalAddress.LowPart / PAGE_SIZE;
 		ULONG PageCount = Memory[i].Size / PAGE_SIZE;
 		// Ensure RAM is mapped consecutively for loading the NT kernel. NT kernel can use RAM mapped elsewhere, however.
-		if (ThisBasePage != BasePage) break;
+		if (ThisBasePage != BasePage) {
+			// Handle empty RAM slots.
+			if (ThisBasePage == 0 && PageCount == 0) continue;
+			break;
+		}
 		BasePage = ThisBasePage + PageCount;
 		PhysSize += Memory[i].Size;
 	}
