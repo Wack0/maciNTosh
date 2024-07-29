@@ -42,9 +42,12 @@
 
 #define printk(...)
 
+void sync_before_exec(const void* p, ULONG len);
+
 static u32 _phys_to_virt(u32 phys) {
+	// return uncached address if possible
 	if (phys >= 0xf0000000) return phys;
-	if (phys < 0x10000000) return 0x80000000 + phys;
+	if (phys < 0x10000000) return 0x90000000 + phys;
 	if (phys < 0x80000000) return NULL;
 	if (phys >= 0x90000000) return NULL;
 	return phys + (0xC0000000 - 0x80000000);
@@ -56,6 +59,7 @@ static u32 virt_to_phys(PVOID _virt) {
 	u32 virt = (u32)_virt;
 	if (virt < 0x80000000) return NULL;
 	if (virt < 0x90000000) return (virt - 0x80000000);
+	if (virt < 0xA0000000) return (virt - 0x90000000);
 	if (virt < 0xC0000000) return NULL;
 	if (virt < 0xD0000000) return (virt - 0xC0000000 + 0x80000000);
 	if (virt < 0xF0000000) return NULL;
@@ -69,15 +73,23 @@ static void* aligned_malloc(size_t required_bytes, size_t alignment)
 	size_t offset = alignment - 1 + sizeof(void*);
 	p1 = (PUCHAR) malloc(required_bytes + offset);
 	if (p1 == NULL) return NULL;
-	p2 = (void**)(((size_t)&p1[offset]) & ~(alignment - 1));
+	memset((PVOID*)((ULONG)p1 + 0x10000000), 0, required_bytes + offset);
+	p2 = (void**)((((size_t)&p1[offset]) & ~(alignment - 1)) + 0x10000000);
 	p2[-1] = p1;
 	//printf("aligned_malloc: %x %x %x %08x %08x\r\n", required_bytes, alignment, required_bytes + offset, p1, p2);
-	return p2;
+	// return uncached address
+	return (void*)p2;
 }
 
 static void aligned_free(void* p)
 {
-	free(((void**)p)[-1]);
+	// cached address is stored before the actual data, so just use it
+	ULONG addr = virt_to_phys(((void**)p)[-1]);
+	if (addr == 0) return;
+	if (addr >= 0x10000000) return;
+	addr += 0x80000000;
+
+	free((PVOID)addr);
 }
 
 static void ofmem_posix_memalign(void** memptr, size_t alignment, size_t size) {
@@ -275,7 +287,7 @@ ohci_init (void *bar)
 	/* Initialize interrupt table. */
 	ohci_t *const ohci = OHCI_INST(controller);
 	ed_t *const periodic_ed;
-        ofmem_posix_memalign((void **)&periodic_ed, sizeof(ed_t), sizeof(ed_t));
+        ofmem_posix_memalign((void **)&periodic_ed, sizeof(ed_t) * 2, sizeof(ed_t));
 	memset((void *)periodic_ed, 0, sizeof(*periodic_ed));
 	for (i = 0; i < 32; ++i)
 		ohci->hcca->HccaInterruptTable[i] = __cpu_to_le32(virt_to_phys(periodic_ed));
@@ -333,6 +345,11 @@ static int
 wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 {
 	usb_debug("Waiting for %d pages on dev %08x with head %08x\n", pages, dev, head);
+	usb_debug("config:%x, head:%x, tail:%x, next:%x\n",
+		__le32_to_cpu(head->config),
+		__le32_to_cpu(head->head_pointer),
+		__le32_to_cpu(head->tail_pointer),
+		__le32_to_cpu(head->next_ed));
 	/* wait for results */
 	/* TOTEST: how long to wait?
 	 *         give 2s per TD (2 pages) plus another 2s for now
@@ -345,11 +362,12 @@ wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 		/* don't log every ms */
 		if (!(timeout % 1000)) {
 			// no timeout, keep waiting forever if need be
-			timeout = 1999;
-			usb_debug("intst: %x; ctrl: %x; cmdst: %x; head: %x -> %x, tail: %x, condition: %x\n",
+			//timeout = 1999;
+			usb_debug("intst: %x; ctrl: %x; cmdst: %x; current: %x; head: %x -> %x, tail: %x, condition: %x\n",
 				READ_OPREG(OHCI_INST(dev->controller), HcInterruptStatus),
 				READ_OPREG(OHCI_INST(dev->controller), HcControl),
 				READ_OPREG(OHCI_INST(dev->controller), HcCommandStatus),
+				READ_OPREG(OHCI_INST(dev->controller), HcControlHeadED),
 				__le32_to_cpu(head->head_pointer),
 				__le32_to_cpu(((td_t*)phys_to_virt(__le32_to_cpu(head->head_pointer) & ~3))->next_td),
 				__le32_to_cpu(head->tail_pointer),
@@ -360,6 +378,17 @@ wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 	if (timeout < 0)
 		usb_debug("Error: ohci: endpoint "
 			"descriptor processing timed out.\n");
+
+	usb_debug("intst: %x; ctrl: %x; cmdst: %x; current: %x; config:%x, head:%x, tail:%x, next:%x\n",
+		READ_OPREG(OHCI_INST(dev->controller), HcInterruptStatus),
+		READ_OPREG(OHCI_INST(dev->controller), HcControl),
+		READ_OPREG(OHCI_INST(dev->controller), HcCommandStatus),
+		READ_OPREG(OHCI_INST(dev->controller), HcControlHeadED),
+		__le32_to_cpu(head->config),
+		__le32_to_cpu(head->head_pointer),
+		__le32_to_cpu(head->tail_pointer),
+		__le32_to_cpu(head->next_ed));
+
 	/* Clear the done queue. */
 	ohci_process_done_queue(OHCI_INST(dev->controller), 1);
 
@@ -403,9 +432,12 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	if (last_page < first_page) last_page = first_page;
 	int pages = (dalen==0)?0:(last_page - first_page + 1);
 
+	// ensure caches are flushed
+	sync_before_exec(data, dalen);
+
 	/* First TD. */
 	td_t *const first_td;
-        ofmem_posix_memalign((void **)&first_td, sizeof(td_t), sizeof(td_t));
+        ofmem_posix_memalign((void **)&first_td, sizeof(td_t) * 2, sizeof(td_t));
 	memset((void *)first_td, 0, sizeof(*first_td));
 	cur = first_td;
 
@@ -420,7 +452,7 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	while (pages > 0) {
 		/* One more TD. */
 		td_t *const next;
-		ofmem_posix_memalign((void **)&next, sizeof(td_t), sizeof(td_t));
+		ofmem_posix_memalign((void **)&next, sizeof(td_t) * 2, sizeof(td_t));
 		memset((void *)next, 0, sizeof(*next));
 		/* Linked to the previous. */
 		cur->next_td = __cpu_to_le32(virt_to_phys(next));
@@ -455,7 +487,7 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 
 	/* One more TD. */
 	td_t *const next_td;
-	ofmem_posix_memalign((void **)&next_td, sizeof(td_t), sizeof(td_t));
+	ofmem_posix_memalign((void **)&next_td, sizeof(td_t) * 2, sizeof(td_t));
 	memset((void *)next_td, 0, sizeof(*next_td));
 	/* Linked to the previous. */
 	cur->next_td = __cpu_to_le32(virt_to_phys(next_td));
@@ -471,14 +503,14 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 
 	/* Final dummy TD. */
 	td_t *const final_td;
-	ofmem_posix_memalign((void **)&final_td, sizeof(td_t), sizeof(td_t));
+	ofmem_posix_memalign((void **)&final_td, sizeof(td_t) * 2, sizeof(td_t));
 	memset((void *)final_td, 0, sizeof(*final_td));
 	/* Linked to the previous. */
 	cur->next_td = __cpu_to_le32(virt_to_phys(final_td));
 
 	/* Data structures */
 	ed_t *head;
-	ofmem_posix_memalign((void **)&head, sizeof(ed_t), sizeof(ed_t));
+	ofmem_posix_memalign((void **)&head, sizeof(ed_t) * 2, sizeof(ed_t));
 	memset((void*)head, 0, sizeof(*head));
 	head->config = __cpu_to_le32((dev->address << ED_FUNC_SHIFT) |
 		(0 << ED_EP_SHIFT) |
@@ -488,8 +520,8 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	head->tail_pointer = __cpu_to_le32(virt_to_phys(final_td));
 	head->head_pointer = __cpu_to_le32(virt_to_phys(first_td));
 
-	usb_debug("ohci_control(): doing transfer with %x. first_td at %x\n",
-		__le32_to_cpu(head->config) & ED_FUNC_MASK, __le32_to_cpu(head->head_pointer));
+	usb_debug("ohci_control(): doing transfer with %x(%x). first_td:%x, final_td:%x, next_ed:%x\n",
+		__le32_to_cpu(head->config) & ED_FUNC_MASK, __le32_to_cpu(head->config), __le32_to_cpu(head->head_pointer), __le32_to_cpu(head->tail_pointer), __le32_to_cpu(head->next_ed));
 #ifdef USB_DEBUG_ED
 	dump_ed(head);
 #endif
@@ -497,7 +529,7 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	/* activate schedule */
 	OHCI_INST(dev->controller)->opreg->HcControlHeadED = __cpu_to_le32(virt_to_phys(head));
 	OHCI_INST(dev->controller)->opreg->HcControl |= __cpu_to_le32(ControlListEnable);
-	OHCI_INST(dev->controller)->opreg->HcInterruptStatus = __cpu_to_le32((1 << 30) | 0x7F);
+	OHCI_INST(dev->controller)->opreg->HcInterruptStatus = __cpu_to_le32((1u << 30) | 0x7F);
 	OHCI_INST(dev->controller)->opreg->HcCommandStatus = __cpu_to_le32(ControlListFilled);
 
 	int failure = wait_for_ed(dev, head,
@@ -533,9 +565,12 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 		td_count++;
 	}
 
+	// ensure caches are flushed
+	sync_before_exec(data, dalen);
+
 	/* First TD. */
 	td_t *const first_td;
-	ofmem_posix_memalign((void **)&first_td, sizeof(td_t), sizeof(td_t));
+	ofmem_posix_memalign((void **)&first_td, sizeof(td_t) * 2, sizeof(td_t));
 	memset((void *)first_td, 0, sizeof(*first_td));
 	cur = next = first_td;
 
@@ -573,7 +608,7 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 			data += second_page_size;
 		}
 		/* One more TD. */
-		ofmem_posix_memalign((void **)&next, sizeof(td_t), sizeof(td_t));
+		ofmem_posix_memalign((void **)&next, sizeof(td_t) * 2, sizeof(td_t));
 		memset((void *)next, 0, sizeof(*next));
 		/* Linked to the previous. */
 		cur->next_td = __cpu_to_le32(virt_to_phys(next));
@@ -586,7 +621,7 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 
 	/* Data structures */
 	ed_t *head;
-	ofmem_posix_memalign((void **)&head, sizeof(ed_t), sizeof(ed_t));
+	ofmem_posix_memalign((void **)&head, sizeof(ed_t) * 2, sizeof(ed_t));
 	memset((void*)head, 0, sizeof(*head));
 	head->config = __cpu_to_le32((ep->dev->address << ED_FUNC_SHIFT) |
 		((ep->endpoint & 0xf) << ED_EP_SHIFT) |
@@ -596,15 +631,16 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 	head->tail_pointer = __cpu_to_le32(virt_to_phys(cur));
 	head->head_pointer = __cpu_to_le32(virt_to_phys(first_td) | (ep->toggle?ED_TOGGLE:0));
 
-	usb_debug("doing bulk transfer with %x(%x). first_td at %lx, last %lx\n",
+	usb_debug("doing bulk transfer with %x(%x),%x. first_td at %lx, last %lx\n",
 		__le32_to_cpu(head->config) & ED_FUNC_MASK,
 		(__le32_to_cpu(head->config) & ED_EP_MASK) >> ED_EP_SHIFT,
+		__le32_to_cpu(head->config),
 		virt_to_phys(first_td), virt_to_phys(cur));
 
 	/* activate schedule */
 	OHCI_INST(ep->dev->controller)->opreg->HcBulkHeadED = __cpu_to_le32(virt_to_phys(head));
 	OHCI_INST(ep->dev->controller)->opreg->HcControl |= __cpu_to_le32(BulkListEnable);
-	OHCI_INST(ep->dev->controller)->opreg->HcInterruptStatus = __cpu_to_le32((1 << 30) | 0x7F);
+	OHCI_INST(ep->dev->controller)->opreg->HcInterruptStatus = __cpu_to_le32((1u << 30) | 0x7F);
 	OHCI_INST(ep->dev->controller)->opreg->HcCommandStatus = __cpu_to_le32(BulkListFilled);
 
 	int failure = wait_for_ed(ep->dev, head,
@@ -681,17 +717,17 @@ ohci_create_intr_queue(endpoint_t *const ep, const int reqsize,
 		return NULL;
 
 	intr_queue_t *const intrq;
-	ofmem_posix_memalign((void **)&intrq, sizeof(intrq->ed), sizeof(*intrq));
+	ofmem_posix_memalign((void **)&intrq, sizeof(intrq->ed) * 2, sizeof(*intrq));
 	memset(intrq, 0, sizeof(*intrq));
-	intrq->data = (u8 *)malloc(reqcount * reqsize);
+	intrq->data = (u8 *)aligned_malloc(reqcount * reqsize, 1);
 	intrq->reqsize = reqsize;
 	intrq->endp = ep;
 
 	/* Create #reqcount TDs. */
-	u8 *cur_data = intrq->data;
+	u8* cur_data = (u8*)intrq->data;
 	for (i = 0; i < reqcount; ++i) {
 		intrq_td_t *const td;
-		ofmem_posix_memalign((void **)&td, sizeof(td->td), sizeof(*td));
+		ofmem_posix_memalign((void **)&td, sizeof(td->td) * 2, sizeof(*td));
 		++intrq->remaining_tds;
 		ohci_fill_intrq_td(td, intrq, cur_data);
 		cur_data += reqsize;
@@ -704,7 +740,7 @@ ohci_create_intr_queue(endpoint_t *const ep, const int reqsize,
 
 	/* Create last, dummy TD. */
 	intrq_td_t *dummy_td;
-	ofmem_posix_memalign((void **)&dummy_td, sizeof(dummy_td->td), sizeof(*dummy_td));
+	ofmem_posix_memalign((void **)&dummy_td, sizeof(dummy_td->td) * 2, sizeof(*dummy_td));
 	memset(dummy_td, 0, sizeof(*dummy_td));
 	dummy_td->intrq = intrq;
 	if (last_td)
@@ -723,6 +759,7 @@ ohci_create_intr_queue(endpoint_t *const ep, const int reqsize,
 #ifdef USB_DEBUG_ED
 	dump_ed(&intrq->ed);
 #endif
+
 	/* Insert ED into periodic table. */
 	int nothing_placed	= 1;
 	ohci_t *const ohci	= OHCI_INST(ep->dev->controller);
