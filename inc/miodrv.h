@@ -152,7 +152,7 @@ static MIO_TYPE MioDoDetect(PPHYSICAL_ADDRESS BaseAddress) {
 			
 			// this is a supported MIO controller.
 			if (DeviceID == 0x0002) RetVal = MIO_GRANDCENTRAL;
-			else if (DeviceID == 0x0x0007) RetVal = MIO_OHARE;
+			else if (DeviceID == 0x0007) RetVal = MIO_OHARE;
 			else RetVal = (DeviceID < 0x0020) ? MIO_PADDINGTON : MIO_KEYLARGO;
 			if (BaseAddress != NULL) BaseAddress->LowPart = PciData->u.type0.BaseAddresses[0];
 			return RetVal;
