@@ -20,7 +20,7 @@ LDSCRIPT = of.ld
 TARGET = stage1.elf
 
 LDSCRIPT_XCOFF = of-xcoff.ld
-LDFLAGS_XCOFF = $(LDFLAGS)
+LDFLAGS_XCOFF := $(LDFLAGS)
 TARGET_XCOFF = boot
 
 FILES = $(wildcard source/*.S) $(wildcard source/*.c)
@@ -40,6 +40,7 @@ STRIP = $(PREFIX)strip
 HOSTCC ?= gcc
 
 ifeq ($(NOMAPFILE),)
+LDFLAGS_XCOFF += -Wl,-Map,$(TARGET_XCOFF).map
 LDFLAGS += -Wl,-Map,$(TARGET).map
 endif
 
