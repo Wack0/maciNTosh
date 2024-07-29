@@ -857,30 +857,14 @@ static void FbGetDetails(OFHANDLE Screen, PHW_DESCRIPTION HwDesc, bool OverrideS
 	}
 	
 	if (ARC_FAIL(OfGetPropInt(Screen, "address", &FbAddr))) {
-		// This is earliest mach64 fcode ROM
-		// Doesn't specify fb addr for some reason, grab it from assigned-addresses and assumem it's at zero
-		ULONG AssignedAddress[4 * 5];
-		ULONG AddrLength = sizeof(AssignedAddress);
-		ARC_STATUS Status = OfGetProperty(Screen, "assigned-addresses", AssignedAddress, &AddrLength);
-		if (ARC_FAIL(Status)) {
+		// framebuffer address is in frame-buffer-adr
+		// this is how BootX gets it
+		OF_ARGUMENT Arg;
+		if (ARC_FAIL(OfInterpret(0, 1, &Arg, "frame-buffer-adr"))) {
 			OfExit();
 			return;
 		}
-		
-		ULONG BaseAddress = 0;
-		for (ULONG i = 0; i < AddrLength / 5; i++) {
-			PULONG Aperture = &AssignedAddress[i * 5];
-			if (Aperture[4] < 0x01000000) continue; // 16MB vram area
-			BaseAddress = Aperture[2];
-			break;
-		}
-		
-		if (BaseAddress < 0x80800000) {
-			OfExit();
-			return;
-		}
-		
-		FbAddr = BaseAddress;
+		FbAddr = Arg.Int;
 	}
 	
 	if (OverrideStride) Stride *= sizeof(ULONG);
