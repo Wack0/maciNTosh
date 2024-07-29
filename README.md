@@ -6,9 +6,6 @@ This repository currently contains the source code for the ARC firmware and its 
 * Power Macintosh G3 (Blue & White) *"Yosemite"*
 * Macintosh PowerBook G3 Bronze Keyboard *"Lombard"* 
 * Power Macintosh G4 PCI *"Yikes!"*
-
-The ARC firmware itself runs at a low enough level that it should be compatible with Old World systems using the same chipset too, but there is currently no loader for these systems; these are the following:
-
 * Power Macintosh G3 (beige)
 * Macintosh PowerBook G3 Series *"Wallstreet"*, *"PDQ"*
 
@@ -45,6 +42,7 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 ### Partitioning Disk
 
 * Boot your PowerMac from the burned optical media. When you get to ARC firmware menu, go to `Run firmware setup`, then `Repartition disk for NT installation`.
+	* On an "Old World" machine (Power Mac G3 beige, PowerBook G3 Wallstreet/PDQ), boot the CD by holding Cmd+Opt+O+F to enter Open Firmware, type `boot ide1/disk\boot.xcf`, and press enter.
 * The disk partitioner will first let you enter partition size of the NT partition (up to the 16383x16x63 CHS limit, minus 32 MB ARC system partition + 1 MB for partition tables / MBR backup / OS 9 drivers / ARC environment variable storage, giving a maximum possible size of 8030 MB), then will drop to a menu allowing the creation of additional Mac partitions.
 	* If you choose an NT partition size over 2GB, the partition will be formatted to NTFS.
 	* After adding a partition to the list, the only way to remove from the list is by cancelling the operation and starting the partitioner again.
@@ -73,6 +71,11 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 * If you chose to create an NT partition of over 2GB in size, errors will be found by the disk examination process which will require a reboot. Boot your PowerMac from the ARC firmware CD again and follow the steps to boot the NT4 text setup again.
 	* On the second attempt, disk examination will succeed, so just choose the `C:` partition again in the NT text setup partition selector.
 * Proceed through the rest of NT text and graphical setup as normal.
+* On an Old World system, you'll need to set the boot device manually.
+	* Reboot and hold Cmd+Opt+O+F to enter Open Firmware.
+	* Type `setenv boot-device ide0/disk@0:6\boot.xcf` to set the boot device.
+	* Type `reset-all` or press Ctrl+Cmd+Power to restart.
+	* You'll need to do this again if the PRAM gets reset (e.g. power is removed and PRAM battery is dead or removed).
 
 ## Known issues
 
@@ -96,11 +99,11 @@ You need devkitPPC. Additionally, a `libgcc.a` compiled for `powerpcle` must be 
 
 * Ensure `DEVKITPPC` environment variable is set to your devkitPPC directory, usually `/opt/devkitpro/devkitPPC`
 * Build the big endian libc: `cd baselibc ; make ; cd ..`
-* Build the ARC firmware loader: `cd arcloader_grackle ; make ; cd ..`
+* Build the ARC firmware loader: `cd arcloader_grackle ; make ; make oldworld ; cd ..`
 * Build the little endian libc: `cd arcgrackle/baselibc ; make ; cd ../..`
 * Build the ARC firmware itself: `cd arcgrackle ; make ; cd ..`
 
-Replace `stage1.elf` and `stage2.elf` inside the release image. For recreating the image from a folder dump, use your preferred tool to create a hybrid HFS+ISO image, make sure `System` folder is blessed and `BootX` file is of type `tbxi`.
+Replace `stage1.elf`, `boot.xcf`, and `stage2.elf` inside the release image. For recreating the image from a folder dump, use your preferred tool to create a hybrid HFS+ISO image, make sure `System` folder is blessed and `BootX` file is of type `tbxi`.
 
 Please note that `stage1.elf` must not be larger than 16KB and `stage2.elf` must not be larger than 224KB.
 
