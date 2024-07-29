@@ -91,6 +91,16 @@ after_invalidate_tlb:
 	mtspr DBAT2L, r3
 	mtspr DBAT2U, r4
 	isync
+
+	// set DBAT3:
+	// 0x9000_0000 + 256MB => physical 0x0000_0000 (uncached, r+w)
+	li r3, 0x2a
+	lis r4, 0x9000
+	ori r4, r4, 0x1fff
+	mtspr DBAT3L, r3
+	mtspr DBAT3U, r4
+	isync
+
 	
 	// set up a stack:
 	// we are at 9MB, use ram before it for stack.
