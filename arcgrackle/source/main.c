@@ -707,6 +707,10 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	// Initialise the console. We know where it is. Just convert it from physical address to our BAT mapping.
 	ArcConsoleInit(PciPhysToVirt(Desc->FrameBufferBase), 0, 0, Desc->FrameBufferWidth, Desc->FrameBufferHeight, Desc->FrameBufferStride);
 
+	// Initialise the exception handlers.
+	void ArcBugcheckInit(void);
+	ArcBugcheckInit();
+
 	// Initialise ARC memory descriptors. 
 	if (ArcMemInitDescriptors(Desc->MemoryLength) < 0) {
 		FwEarlyPanic("[ARC] Could not initialise memory description");
