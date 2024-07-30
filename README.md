@@ -76,6 +76,7 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 	* Type `setenv boot-device ide0/disk@0:6\boot.xcf` to set the boot device.
 	* Type `reset-all` or press Ctrl+Cmd+Power to restart.
 	* You'll need to do this again if the PRAM gets reset (e.g. power is removed and PRAM battery is dead or removed).
+	* If you have Mac OS 8/9 working, you can also use the System Disk control panel to set the boot device. Select the `Power User` option, and select `Configure Manually` next to `Boot Device`. Then change it to `ide0/disk@0:6\boot.xcf` as shown above. Hit `Save` and reboot.
 
 ## Known issues
 
@@ -116,3 +117,4 @@ Please note that `stage1.elf` must not be larger than 16KB and `stage2.elf` must
 	* USB drivers in OpenBIOS were themselves adapted from [coreboot](https://github.com/coreboot/coreboot)
 * ISO9660 FS implementation inside ARC firmware is [lib9660](https://github.com/erincandescent/lib9660) with some modifications.
 * FAT FS implementation inside ARC firmware is [Petit FatFs](http://elm-chan.org/fsw/ff/00index_p.html) with some modifications.
+* `hack-coff.c` for XCOFF loaders is borrowed from the Linux kernel source.
