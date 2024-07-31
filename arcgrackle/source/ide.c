@@ -729,7 +729,7 @@ ob_ide_atapi_request_sense(struct ide_drive *drive)
  * make sure drive is ready and media loaded
  */
 static int
-ob_ide_atapi_drive_ready(struct ide_drive *drive)
+ob_ide_atapi_drive_ready(struct ide_drive *drive, bool on_open)
 {
 	struct atapi_command *cmd = &drive->channel->atapi_cmd;
 	struct atapi_capacity cap;
@@ -746,6 +746,9 @@ ob_ide_atapi_drive_ready(struct ide_drive *drive)
 		IDE_DPRINTF("%d: TUR failed\n", drive->nr);
 		return 1;
 	}
+
+	// when doing read/write only TUR
+	if (!on_open) return 0;
 
 	/*
 	 * don't force load of tray (bit 2 in byte 4 of cdb), it's
@@ -792,7 +795,7 @@ ob_ide_read_atapi(struct ide_drive *drive, unsigned long long block,
 {
 	struct atapi_command *cmd = &drive->channel->atapi_cmd;
 
-	if (ob_ide_atapi_drive_ready(drive))
+	if (ob_ide_atapi_drive_ready(drive, false))
 		return 1;
 
 	memset(cmd, 0, sizeof(*cmd));
@@ -950,7 +953,7 @@ ob_ide_write_atapi(struct ide_drive *drive, unsigned long long block,
 {
 	struct atapi_command *cmd = &drive->channel->atapi_cmd;
 
-	if (ob_ide_atapi_drive_ready(drive))
+	if (ob_ide_atapi_drive_ready(drive, false))
 		return 1;
 
 	memset(cmd, 0, sizeof(*cmd));
@@ -1457,7 +1460,10 @@ PIDE_DRIVE ob_ide_open(int channel, int unit)
 	dump_drive(drive);
 
 	if (drive->type != ide_type_ata) {
-		if (ob_ide_atapi_drive_ready(drive) != 0) return NULL;
+		if (ob_ide_atapi_drive_ready(drive, true) != 0) {
+			// try twice
+			if (ob_ide_atapi_drive_ready(drive, true) != 0) return NULL;
+		}
 	}
 
 	return drive;
