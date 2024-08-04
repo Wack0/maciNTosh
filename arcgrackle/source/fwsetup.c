@@ -452,7 +452,7 @@ static void ArcFwPartitioner(ULONG SetupMenuChoice) {
 					case 'A': // Up arrow
 					case 'D': // Left arrow
 						if (DefaultChoice == 0) DefaultChoice = HdCount;
-						DefaultChoice--;
+						else DefaultChoice--;
 						break;
 					case 'B': // Down arrow
 					case 'C': // Right arrow
