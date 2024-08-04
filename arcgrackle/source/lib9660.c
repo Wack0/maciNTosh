@@ -196,11 +196,14 @@ static l9660_status openat_raw(l9660_file *child, l9660_dir *parent, const char 
         const char *seg = name;
         name = strchrnul(name, '\\');
         size_t seglen = (size_t)name - (size_t)seg;
+        bool check_also_for_dot = false;
         if (*name) name++;
+        else if (strchr(seg, '.') == NULL) check_also_for_dot = true;
 
         /* ISO9660 stores '.' as '\0' */
-        if (seglen == 1 && *seg == '.')
+        if (seglen == 1 && *seg == '.') {
             seg = "\0";
+        }
 
         /* ISO9660 stores ".." as '\1' */
         if (seglen == 2 && seg[0] == '.' && seg[1] == '.') {
@@ -221,16 +224,23 @@ static l9660_status openat_raw(l9660_file *child, l9660_dir *parent, const char 
 #endif
 
             /* wrong length */
-            if (seglen > dent->name_len)
+            if (seglen > dent->name_len) {
                 continue;
+            }
 
             /* check name */
             if (strnicmp(seg, dent->name, seglen) != 0)
                 continue;
 
             /* check for a revision tag */
-            if (dent->name_len > seglen && dent->name[seglen] != ';')
-                continue;
+            if (dent->name_len > seglen && dent->name[seglen] != ';') {
+                if (!check_also_for_dot) continue;
+                if (dent->name_len > (seglen + 1)) {
+                    if (dent->name[seglen] != '.') continue;
+                    if (dent->name[seglen + 1] != ';') continue;
+                }
+                else continue;
+            }
 
             /* all tests pass */
             break;
