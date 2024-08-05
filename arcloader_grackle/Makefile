@@ -19,6 +19,10 @@ LDFLAGS += -nostartfiles -nodefaultlibs -L../baselibc
 LDSCRIPT = of.ld
 TARGET = stage1.elf
 
+LDSCRIPT_XCOFF = of-xcoff.ld
+LDFLAGS_XCOFF := $(LDFLAGS)
+TARGET_XCOFF = boot
+
 FILES = $(wildcard source/*.S) $(wildcard source/*.c)
 OBJSx = $(FILES:source/%.S=build/%.o)
 OBJS = $(OBJSx:source/%.c=build/%.o)
@@ -33,11 +37,15 @@ OBJCOPY = $(PREFIX)objcopy
 RANLIB = $(PREFIX)ranlib
 STRIP = $(PREFIX)strip
 
+HOSTCC ?= gcc
+
 ifeq ($(NOMAPFILE),)
+LDFLAGS_XCOFF += -Wl,-Map,$(TARGET_XCOFF).map
 LDFLAGS += -Wl,-Map,$(TARGET).map
 endif
 
 ifneq ($(LDSCRIPT),)
+LDFLAGS_XCOFF += -Wl,-T$(LDSCRIPT_XCOFF)
 LDFLAGS += -Wl,-T$(LDSCRIPT)
 endif
 
@@ -46,11 +54,30 @@ DEPDIR = .deps
 all: $(TARGET)
 	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
 
+oldworld: $(TARGET_XCOFF).xcf
+	@[ -d $(DIR_BUILD) ] || mkdir $(DIR_BUILD)
+
 $(TARGET): $(OBJS)
 	@echo "  LINK      $@"
 	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 	@cp $(TARGET) $(TARGET:%.elf=%_unstripped.elf)
-	@strip $(TARGET)
+	@$(STRIP) $(TARGET)
+
+$(TARGET_XCOFF).elf: $(OBJS)
+	@echo "  LINK      $@"
+	@$(CC) $(LDFLAGS_XCOFF) $(OBJS) $(LIBS) -o $@
+	@cp $(TARGET_XCOFF).elf $(TARGET_XCOFF)_unstripped.elf
+	@$(STRIP) $(TARGET_XCOFF).elf
+
+$(TARGET_XCOFF).xcf: $(TARGET_XCOFF).elf hack-coff
+	@echo "  OBJCOPY   $@"
+	@rm -f $@
+	@$(OBJCOPY) -O aixcoff-rs6000 -j .text -j .data -j .bss $< $@
+	@./hack-coff $@
+
+hack-coff: hack-coff.c
+	@echo "  HOSTCC    $@"
+	@$(HOSTCC) -o $@ $<
 
 ifneq ($(LDSCRIPT),)
 $(TARGET): $(LDSCRIPT)
