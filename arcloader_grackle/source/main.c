@@ -8,10 +8,12 @@
 #include "ofapi.h"
 #include "elf_abi.h"
 #include "hwdesc.h"
+#define SYSTEM_LITTLE 1 // 1 for any system with PCI bus endianness switching (grackle and prior), 0 for those where PCI bus is always big-endian (uni-north)
 
 // This is the default gamma table set up in the DAC by the ATI OS9 drivers.
 // Every driver contains 4 seperate tables, this is the default one used;
 // an identical copy of the tables is present in each driver.
+// The exact same table is used in the nvidia driver.
 static const UCHAR sc_GammaTable[] = {
 	0x00, 0x05, 0x09, 0x0B, 0x0E, 0x10, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1E, 0x20, 0x22, 0x24,
 	0x25, 0x27, 0x28, 0x2A, 0x2C, 0x2D, 0x2F, 0x30, 0x31, 0x33, 0x34, 0x36, 0x37, 0x38, 0x3A, 0x3B,
@@ -839,6 +841,138 @@ static bool FbSetDepthAti(OFHANDLE Screen) {
 	return Success;
 }
 
+static bool FbSetDepthNv(OFHANDLE Screen) {
+	// Get the current stride, needed later.
+	ULONG Stride;
+	if (ARC_FAIL(OfGetPropInt(Screen, "linebytes", &Stride))) return false;
+	// Convert it to stride for 32bpp.
+	Stride *= 4;
+	
+	// Get the parent of screen.
+	OFHANDLE GfxDevice = OfParent(Screen);
+	if (GfxDevice == OFNULL) return false;
+	
+	// Check for "NVDA,Features" property
+	StdOutWrite("\r\n");
+	if (!OfPropExists(GfxDevice, "NVDA,Features")) {
+		if (OfPropExists(Screen, "NVDA,Features")) {
+			GfxDevice = Screen;
+		} else {
+			// this isn't NV fcode, can't do anything
+			return false;
+		}
+	}
+	
+	// GfxDevice is now the base device.
+	// get the assigned-addresses, of which there should be 3, allocate 4 just in case
+	ULONG AssignedAddress[4 * 5];
+	ULONG AddrLength = sizeof(AssignedAddress);
+	ARC_STATUS Status = OfGetProperty(GfxDevice, "assigned-addresses", AssignedAddress, &AddrLength);
+	if (ARC_FAIL(Status)) {
+		return false;
+	}
+	
+	ULONG BaseAddress = 0;
+	for (ULONG i = 0; i < AddrLength / 5; i++) {
+		PULONG Aperture = &AssignedAddress[i * 5];
+		if ((Aperture[0] & 0xff) != 0x10) continue; // NV15-G7x MMIO area.
+		BaseAddress = Aperture[2];
+		break;
+	}
+	
+	if (BaseAddress < 0x80800000) {
+		return false;
+	}
+	
+	// Watch endianness.
+	// OS9 driver actually uses big endian writes here!
+	// But that's because the very first thing it does after mapping the MMIO,
+	// is put the card into big endian mode.
+	// Under open firmware everything runs as little endian.
+	ULONG PCRTC = BaseAddress + 0x600000;
+	volatile UCHAR* NV_PRMCIO_CRTC = (volatile UCHAR*)(PCRTC + 0x13D4);
+	// Unlock the CRTC.
+	// BUGBUG: OS9 driver sets the index twice for some reason.
+	NV_PRMCIO_CRTC[0] = 0x1F;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = 0x57; // NV_CIO_SR_UNLOCK_RW
+	__asm__ volatile ("eieio");
+	// OS9 driver sets the framebuffer offset here
+	#if 0
+	volatile U32LE* NV_PCRTC_START = (volatile ULONG*)(PCRTC + 0x800);
+	NV_PCRTC_START->v = 0;
+	__asm__ volatile ("eieio");
+	#endif
+	// Set CRTC pixel depth 32bpp
+	NV_PRMCIO_CRTC[0] = 0x28;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = 0x03;
+	__asm__ volatile ("eieio");
+	// Set PRAMDAC_GENERAL_CONTROL
+	volatile U32LE* NV_PRAMDAC_GENERAL_CONTROL = (volatile ULONG*)(PCRTC + 0x80600);
+	NV_PRAMDAC_GENERAL_CONTROL->v = 0x101130; // PIXMIX_ON | VGA_STATE_SEL | ALT_MODE_SEL | BPC_8BITS
+	__asm__ volatile ("eieio");
+	// NV_CIO_CR_OFFSET = stride / 8
+	NV_PRMCIO_CRTC[0] = 0x13;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = Stride / 8;
+	__asm__ volatile ("eieio");
+	// NV_CIO_CRE_RPC0 = (stride / 64) & 0xE0
+	NV_PRMCIO_CRTC[0] = 0x19;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = (Stride / 64) & 0xE0;
+	__asm__ volatile ("eieio");
+	// Ensure framebuffer is set to the correct endianness
+	// NV_CIO_CRE_RCR &= ~ENDIAN_BIG
+	NV_PRMCIO_CRTC[0] = 0x46;
+	__asm__ volatile ("eieio");
+	#if SYSTEM_LITTLE
+	NV_PRMCIO_CRTC[1] &= ~(1 << 7); // unset big endian
+	#else
+	NV_PRCMIO_CRTC[1] |= (1 << 7); // set big endian
+	#endif
+	__asm__ volatile ("eieio");
+	// Relock the CRTC.
+	NV_PRMCIO_CRTC[0] = 0x1F;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = 0x99; // NV_CIO_SR_LOCK_RW
+	__asm__ volatile ("eieio");
+	
+	// Write the gamma table.
+	// Later cards need this, does this unlock the palette registers?
+	NV_PRMCIO_CRTC[0] = 0x28;
+	__asm__ volatile ("eieio");
+	UCHAR OldCrtc28 = NV_PRMCIO_CRTC[1];
+	NV_PRMCIO_CRTC[1] = OldCrtc28 & ~0x7F;
+	__asm__ volatile ("eieio");
+	volatile UCHAR* NV_PRMDIO_PALETTE = (volatile UCHAR*)(BaseAddress + 0x6813c8);
+	NV_PRMDIO_PALETTE[0] = 0;
+	__asm__ volatile ("eieio");
+	
+	for (ULONG i = 0; i < sizeof(sc_GammaTable); i++) {
+		NV_PRMDIO_PALETTE[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+		NV_PRMDIO_PALETTE[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+		NV_PRMDIO_PALETTE[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+	}
+	
+	NV_PRMCIO_CRTC[0] = 0x28;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = OldCrtc28;
+	__asm__ volatile ("eieio");
+	
+	// For a big endian system, switch the card endianness to big now!
+	#if !SYSTEM_LITTLE
+	*(volatile ULONG*)(BaseAddress + 4) = 1; // Actually switch the card endianness
+	__asm__ volatile ("eieio");
+	// Set some CRTC register bit for both CRTCs
+	*(volatile ULONG*)(PCRTC + 0x804) |= (1 << 31); // First
+	*(volatile ULONG*)(PCRTC + 0x2804) ||= (1 << 31); // And second
+	__asm__ volatile ("eieio");
+	#endif
+	
+	return true;
+}
+
 static void FbGetDetails(OFHANDLE Screen, PHW_DESCRIPTION HwDesc, bool OverrideStride) {
 	// Get the framebuffer details.
 	ULONG FbAddr, Width, Height, Stride;
@@ -1042,9 +1176,8 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 			}
 			FbGetDetails(Screen, Desc, false);
 		} else {
-			if (!FbSetDepthAti(Screen)) {
-				// TODO: support NV cards
-				StdOutWrite("Could not set up 32bpp framebuffer, nvidia cards are not supported yet\r\n");
+			if (!FbSetDepthAti(Screen) && !FbSetDepthNv(Screen)) {
+				StdOutWrite("Could not set up 32bpp framebuffer\r\n");
 				OfExit();
 				return -12;
 			}
