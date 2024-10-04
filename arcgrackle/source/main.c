@@ -213,8 +213,15 @@ static void PrintDevices(ULONG DiskCount, ULONG CdromCount) {
 	if (s_RuntimeRamdisk.Buffer.Length != 0) printf(" drivers.img ramdisk loaded\r\n");
 }
 
+static bool s_RamdiskLoaded = false;
+
 bool ArcHasRamdiskLoaded(void) {
-	return (s_RuntimeRamdisk.Buffer.Length != 0);
+	return s_RamdiskLoaded;
+}
+
+PVOID ArcGetRamDisk(PULONG Length) {
+	*Length = s_RuntimeRamdisk.Buffer.Length;
+	return (PVOID)(s_RuntimeRamdisk.Buffer.PointerArc | 0x80000000);
 }
 
 void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length) {
@@ -223,6 +230,7 @@ void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length) {
 	s_RuntimeRamdisk.Buffer.Length = Length;
 
 	s_RuntimePointers[RUNTIME_RAMDISK].v = (ULONG)&s_RuntimeRamdisk;
+	s_RamdiskLoaded = true;
 }
 
 static void ArcMain() {
@@ -722,7 +730,18 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	if (HeapChunk == NULL) {
 		FwEarlyPanic("[ARC] Could not allocate heap memory");
 	}
-	add_malloc_block(HeapChunk, 0x100000);
+	add_malloc_block(HeapChunk, 0x400000);
+	
+	// If we were passed loaded images then set them up.
+
+	// Zero out the entire runtime area.
+	memset(s_RuntimeArea, 0, sizeof(*s_RuntimeArea));
+	if (Desc->DriversImgBase != 0) {
+		PUCHAR Ramdisk = ArcMemAllocDirect(Desc->DriversImgSize);
+		memcpy(Ramdisk, (PVOID)(Desc->DriversImgBase + 0x80000000u), Desc->DriversImgSize);
+		s_RuntimeRamdisk.Buffer.Length = Desc->DriversImgSize;
+		s_RuntimeRamdisk.Buffer.PointerArc = ((ULONG)Ramdisk & ~0x80000000);
+	}
 
 	// Initialise hardware.
 	// Timers.
@@ -730,7 +749,7 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	setup_timers(Desc->DecrementerFrequency);
 	// PXI.
 	printf("Init pxi...\r\n");
-	PxiInit(PciPhysToVirt(Desc->MacIoStart + 0x16000), (Desc->MrpFlags & MRP_VIA_IS_CUDA) != 0);
+	PxiInit(PciPhysToVirt(Desc->MacIoStart + 0x16000), (Desc->MrFlags & MRF_VIA_IS_CUDA) != 0);
 	// ADB.
 	int adb_bus_init();
 	printf("Init adb...\r\n");
@@ -756,11 +775,8 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 
 	printf("Early driver init done.\r\n");
 
-	// Zero out the entire runtime area.
-	memset(s_RuntimeArea, 0, sizeof(*s_RuntimeArea));
-
 	// Emulator status.
-	s_RuntimePointers[RUNTIME_IN_EMULATOR].v = (Desc->MrpFlags & MRP_IN_EMULATOR) != 0;
+	s_RuntimePointers[RUNTIME_IN_EMULATOR].v = (Desc->MrFlags & MRF_IN_EMULATOR) != 0;
 
 	// Initialise the first runtime pointer to the VI framebuffer information.
 	s_RuntimeFb.PointerArc = Desc->FrameBufferBase;
@@ -773,7 +789,7 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	// Initialise the decrementer frequency.
 	s_RuntimePointers[RUNTIME_DECREMENTER_FREQUENCY].v = Desc->DecrementerFrequency;
 
-	s_RuntimePointers[RUNTIME_HAS_CUDA].v = (Desc->MrpFlags & MRP_VIA_IS_CUDA) != 0;
+	s_RuntimePointers[RUNTIME_HAS_CUDA].v = (Desc->MrFlags & MRF_VIA_IS_CUDA) != 0;
 
 	s_MacIoStart = Desc->MacIoStart;
 	ArcMain();

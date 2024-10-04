@@ -755,18 +755,61 @@ static const DEVICE_VECTORS s_RdVectors = {
     .GetDirectoryEntry = NULL
 };
 
+
 bool ArcHasRamdiskLoaded(void);
+PVOID ArcGetRamDisk(PULONG Length);
 void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length);
+
+static ARC_STATUS ArcDiskInitRamdiskAfterLoad(PUCHAR Address, ULONG Length) {
+    // Grab the root device.
+    PDEVICE_ENTRY Root = ArcGetChild(NULL);
+    // Add the ramdisk controller and ensure it uses an unused key.
+    PDEVICE_ENTRY RdControl = (PDEVICE_ENTRY)ArcAddChild(&Root->Component, &s_RamdiskController, NULL);
+    if (RdControl == NULL) {
+        printf("ArcAddChild(Root, RamdiskController) failed\r\n");
+        return _EFAULT;
+    }
+    while (ArcConfigKeyExists(RdControl)) RdControl->Component.Key++;
+    // Same, but for disk controller.
+    // There is only one child of the rd controller, so no need to search for unused key.
+    PDEVICE_ENTRY RdDisk = ArcAddChild(&RdControl->Component, &s_RamdiskDisk, NULL);
+    if (RdDisk == NULL) {
+        printf("ArcAddChild(RamdiskController, RamdiskDisk) failed\r\n");
+        return _EFAULT;
+    }
+    // Same, but for fixed disk device.
+    s_RamdiskResource.Descriptors[0].Memory.Length = Length;
+    s_RamdiskResource.Descriptors[0].Memory.Start.LowPart = (ULONG)Address;
+    s_RamdiskFdisk.ConfigurationDataLength = sizeof(s_RamdiskResource);
+    PDEVICE_ENTRY RdFdisk = ArcAddChild(&RdDisk->Component, &s_RamdiskFdisk, &s_RamdiskResource);
+    if (RdFdisk == NULL) {
+        printf("ArcAddChild(RamdiskDisk, RamdiskFdisk) failed\r\n");
+        return _EFAULT;
+    }
+
+    // Set up the vectors for fixed disk device.
+    RdFdisk->Vectors = &s_RdVectors;
+
+    // Initialise the runtime descriptor for the NT driver.
+    ArcInitRamDisk(RdControl->Component.Key, Address, Length);
+    return _ESUCCESS;
+}
 
 ARC_STATUS ArcDiskInitRamdisk(void) {
     if (ArcHasRamdiskLoaded()) return _ESUCCESS;
     // Ensure there are enough spaces for 3 components (controller, disk, fdisk).
     if (g_AdditionalComponentsCount > (MAXIMUM_DEVICE_COUNT - 3)) return _ENOSPC;
 
-    PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
 
     PVOID Ramdisk = NULL;
     ULONG FileSize32 = 0;
+    
+    Ramdisk = ArcGetRamDisk(&FileSize32);
+    if (Ramdisk != NULL && FileSize32 != 0) {
+        return ArcDiskInitRamdiskAfterLoad(Ramdisk, FileSize32);
+    }
+
+    PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
 
     ULONG CountCdrom;
     ArcDiskGetCounts(NULL, &CountCdrom);
@@ -821,38 +864,7 @@ ARC_STATUS ArcDiskInitRamdisk(void) {
 
     if (Ramdisk == NULL || FileSize32 == 0) return Status;
 
-    // Grab the root device.
-    PDEVICE_ENTRY Root = ArcGetChild(NULL);
-    // Add the ramdisk controller and ensure it uses an unused key.
-    PDEVICE_ENTRY RdControl = (PDEVICE_ENTRY)ArcAddChild(&Root->Component, &s_RamdiskController, NULL);
-    if (RdControl == NULL) {
-        printf("ArcAddChild(Root, RamdiskController) failed\r\n");
-        return _EFAULT;
-    }
-    while (ArcConfigKeyExists(RdControl)) RdControl->Component.Key++;
-    // Same, but for disk controller.
-    // There is only one child of the rd controller, so no need to search for unused key.
-    PDEVICE_ENTRY RdDisk = ArcAddChild(&RdControl->Component, &s_RamdiskDisk, NULL);
-    if (RdDisk == NULL) {
-        printf("ArcAddChild(RamdiskController, RamdiskDisk) failed\r\n");
-        return _EFAULT;
-    }
-    // Same, but for fixed disk device.
-    s_RamdiskResource.Descriptors[0].Memory.Length = FileSize32;
-    s_RamdiskResource.Descriptors[0].Memory.Start.LowPart = (ULONG)Ramdisk;
-    s_RamdiskFdisk.ConfigurationDataLength = sizeof(s_RamdiskResource);
-    PDEVICE_ENTRY RdFdisk = ArcAddChild(&RdDisk->Component, &s_RamdiskFdisk, &s_RamdiskResource);
-    if (RdFdisk == NULL) {
-        printf("ArcAddChild(RamdiskDisk, RamdiskFdisk) failed\r\n");
-        return _EFAULT;
-    }
-
-    // Set up the vectors for fixed disk device.
-    RdFdisk->Vectors = &s_RdVectors;
-
-    // Initialise the runtime descriptor for the NT driver.
-    ArcInitRamDisk(RdControl->Component.Key, Ramdisk, FileSize32);
-    return _ESUCCESS;
+    return ArcDiskInitRamdiskAfterLoad(Ramdisk, FileSize32);
 }
 
 void ArcConfigInit(void) {

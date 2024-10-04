@@ -178,7 +178,7 @@ int ArcMemInitNtMapping(void) {
 		OFHANDLE Handle = OfChild(OFNULL);
 		Emulated = !OfPropExists(Handle, "copyright");
 	}
-	if (Emulated) s_MrpFlags |= MRP_IN_EMULATOR;
+	if (Emulated) s_MrpFlags |= MRF_IN_EMULATOR;
 
 
 	s_LastFreePage = NtMapSize / PAGE_SIZE;
@@ -369,6 +369,16 @@ static void MsrLeMunge32(void* ptr, ULONG len) {
 	for (; len > 0; len -= sizeof(uint64_t), ptr32 += 2) {
 		ULONG temp = ptr32[0];
 		ptr32[0] = ptr32[1];
+		ptr32[1] = temp;
+	}
+}
+
+static void MsrLeSwap64InPlace(void* ptr, ULONG len) {
+	ULONG* ptr32 = (ULONG*)ptr;
+	
+	for (; len > 0; len -= sizeof(uint64_t), ptr32 += 2) {
+		ULONG temp = __builtin_bswap32(ptr32[0]);
+		ptr32[0] = __builtin_bswap32(ptr32[1]);
 		ptr32[1] = temp;
 	}
 }
@@ -1135,6 +1145,27 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 	Desc->MemoryLength = s_PhysMemLength;
 	Desc->MacIoStart = s_MacIoStart;
 	
+	// Maximum of 2MB for drivers.img (minimum of 160KB, smallest possible size of a FAT12 floppy image)
+	// Assumption: new world grackle systems have at least 32MB RAM
+	// Assumption: ARC firmware will allocate blocks for us from the end of memory
+	// Assumption: ARC firmware stays away from first 8MB as much as possible
+	// Load drivers.img at 5MB.
+	PUCHAR BootAddr = (PUCHAR)((s_FirstFreePage * PAGE_SIZE) + 0x500000);
+	strcpy(&BootPath[BootPathIdx], "drivers.img");
+	File = OfOpen(BootPath);
+	if (File != OFINULL) {
+		ActualLoad = 0;
+		Status = OfRead(File, BootAddr, 0x200000, &ActualLoad);
+		OfClose(File);
+		if (ARC_SUCCESS(Status) && ActualLoad != 0 && ActualLoad >= 0x28000) {
+			// Loaded successfully, store the physical address and length into desc
+			Desc->DriversImgBase = (ULONG)BootAddr;
+			Desc->DriversImgSize = ActualLoad;
+			// and munge what we loaded
+			MsrLeSwap64InPlace(BootAddr, ActualLoad);
+		}
+	}
+	
 	{
 		ULONG DecrementerFrequency = 0;
 		OFHANDLE Cpu = OfFindDevice("/cpus");
@@ -1152,8 +1183,8 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 		Desc->DecrementerFrequency = DecrementerFrequency;
 	}
 	
-	if (OfFindDevice("pmu") == OFNULL) s_MrpFlags |= MRP_VIA_IS_CUDA;
-	Desc->MrpFlags = s_MrpFlags;
+	if (OfFindDevice("pmu") == OFNULL) s_MrpFlags |= MRF_VIA_IS_CUDA;
+	Desc->MrFlags = s_MrpFlags;
 	
 	{
 		// Get the framebuffer from OF.
