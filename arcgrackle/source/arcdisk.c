@@ -337,13 +337,16 @@ static ARC_STATUS DeblockerRead(ULONG FileId, PVOID Buffer, ULONG Length, PULONG
 
 	// If the current position is not at a sector boundary, read the first sector seperately.
 	ULONG Offset = FileEntry->Position & (SectorSize - 1);
-	while (Offset != 0) {
-		int64_t OldPosition = FileEntry->Position;
-		FileEntry->Position -= Offset;
-		Status = DeblockerRead(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
+	
+	// Hardcode the two most common sector sizes to avoid expensive divdi3 calls
+	ULONG CurrentSector = 0;
+	if (SectorSize == 0x200) CurrentSector = (FileEntry->Position - Offset) / 0x200;
+	else if (SectorSize == 0x800) CurrentSector = (FileEntry->Position - Offset) / 0x800;
+	else CurrentSector = (FileEntry->Position - Offset) / SectorSize;
+	
+	if (Offset != 0) {
+		Status = FileEntry->ReadSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) {
-			FileEntry->Position = OldPosition;
 			return Status;
 		}
 
@@ -354,10 +357,8 @@ static ARC_STATUS DeblockerRead(ULONG FileId, PVOID Buffer, ULONG Length, PULONG
 		Buffer = (PVOID)((size_t)Buffer + Limit);
 		Length -= Limit;
 		*Count += Limit;
-		FileEntry->Position = OldPosition + Limit;
-		Offset = FileEntry->Position & (SectorSize - 1);
-
-		if (Length == 0) break;
+		FileEntry->Position += Limit;
+		CurrentSector++;
 	}
 
 	// At a sector boundary, so read as many sectors as possible.
@@ -367,17 +368,16 @@ static ARC_STATUS DeblockerRead(ULONG FileId, PVOID Buffer, ULONG Length, PULONG
 		ULONG SectorsToTransfer = BytesToTransfer / SectorSize;
 		if (SectorsToTransfer > FileEntry->u.DiskContext.MaxSectorTransfer) SectorsToTransfer = FileEntry->u.DiskContext.MaxSectorTransfer;
 
-		ULONG CurrentSector = FileEntry->Position / SectorSize;
 		if ((CurrentSector + SectorsToTransfer) > SectorCount) {
 			SectorsToTransfer = SectorCount - CurrentSector;
 		}
 
 		if (SectorsToTransfer == 0) break;
 
-		CurrentSector += SectorStart;
-
-		Status = FileEntry->ReadSectors(FileEntry, CurrentSector, SectorsToTransfer, Buffer);
-		if (ARC_FAIL(Status)) return Status;
+		Status = FileEntry->ReadSectors(FileEntry, CurrentSector + SectorStart, SectorsToTransfer, Buffer);
+		if (ARC_FAIL(Status)) {
+			return Status;
+		}
 
 		ULONG Limit = SectorsToTransfer * SectorSize;
 		*Count += Limit;
@@ -385,15 +385,13 @@ static ARC_STATUS DeblockerRead(ULONG FileId, PVOID Buffer, ULONG Length, PULONG
 		Buffer = (PVOID)((size_t)Buffer + Limit);
 		BytesToTransfer -= Limit;
 		FileEntry->Position += Limit;
+		CurrentSector += SectorsToTransfer;
 	}
 
 	// If there's any data left to read, read the last sector.
 	if (Length != 0) {
-		int64_t OldPosition = FileEntry->Position;
-		Status = DeblockerRead(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
+		Status = FileEntry->ReadSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) {
-			FileEntry->Position = OldPosition;
 			return Status;
 		}
 
@@ -430,18 +428,18 @@ static ARC_STATUS DeblockerWrite(ULONG FileId, PVOID Buffer, ULONG Length, PULON
 
 	// If the current position is not at a sector boundary, read the first sector seperately, replace the data, and write back to disk
 	ULONG Offset = FileEntry->Position & (SectorSize - 1);
-	while (Offset != 0) {
-		int64_t OldPosition = FileEntry->Position;
-		FileEntry->Position -= Offset;
-		int64_t WritePosition = FileEntry->Position;
-		Status = DeblockerRead(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
+	
+	// Hardcode the two most common sector sizes to avoid expensive divdi3 calls
+	ULONG CurrentSector = 0;
+	if (SectorSize == 0x200) CurrentSector = (FileEntry->Position - Offset) / 0x200;
+	else if (SectorSize == 0x800) CurrentSector = (FileEntry->Position - Offset) / 0x800;
+	else CurrentSector = (FileEntry->Position - Offset) / SectorSize;
+	
+	if (Offset != 0) {
+		Status = FileEntry->ReadSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) {
-			FileEntry->Position = OldPosition;
 			return Status;
 		}
-		// Reset the position to before the read.
-		FileEntry->Position = WritePosition;
 
 		ULONG Limit;
 		if ((SectorSize - Offset) > Length) Limit = Length;
@@ -449,20 +447,16 @@ static ARC_STATUS DeblockerWrite(ULONG FileId, PVOID Buffer, ULONG Length, PULON
 		memcpy(&LocalPointer[Offset], Buffer, Limit);
 
 		// Write the sector.
-		Status = DeblockerWrite(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
+		Status = FileEntry->WriteSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) {
-			FileEntry->Position = OldPosition;
 			return Status;
 		}
 
 		Buffer = (PVOID)((size_t)Buffer + Limit);
 		Length -= Limit;
 		*Count += Limit;
-		FileEntry->Position = OldPosition + Limit;
-		Offset = FileEntry->Position & (SectorSize - 1);
-
-		if (Length == 0) break;
+		FileEntry->Position += Limit;
+		CurrentSector++;
 	}
 
 	// At a sector boundary, so write as many sectors as possible.
@@ -472,16 +466,13 @@ static ARC_STATUS DeblockerWrite(ULONG FileId, PVOID Buffer, ULONG Length, PULON
 		ULONG SectorsToTransfer = BytesToTransfer / SectorSize;
 		if (SectorsToTransfer > FileEntry->u.DiskContext.MaxSectorTransfer) SectorsToTransfer = FileEntry->u.DiskContext.MaxSectorTransfer;
 
-		ULONG CurrentSector = FileEntry->Position / SectorSize;
 		if ((CurrentSector + SectorsToTransfer) > SectorCount) {
 			SectorsToTransfer = SectorCount - CurrentSector;
 		}
 
 		if (SectorsToTransfer == 0) break;
 
-		CurrentSector += SectorStart;
-
-		Status = FileEntry->WriteSectors(FileEntry, CurrentSector, SectorsToTransfer, Buffer);
+		Status = FileEntry->WriteSectors(FileEntry, CurrentSector + SectorStart, SectorsToTransfer, Buffer);
 		if (ARC_FAIL(Status)) return Status;
 
 		ULONG Limit = SectorsToTransfer * SectorSize;
@@ -490,24 +481,19 @@ static ARC_STATUS DeblockerWrite(ULONG FileId, PVOID Buffer, ULONG Length, PULON
 		Buffer = (PVOID)((size_t)Buffer + Limit);
 		BytesToTransfer -= Limit;
 		FileEntry->Position += Limit;
+		CurrentSector += SectorsToTransfer;
 	}
 
 	// If there's any data left to write, read the last sector seperately, replace the data, and write back to disk.
 	if (Length != 0) {
-		int64_t OldPosition = FileEntry->Position;
-		ARC_STATUS Status = DeblockerRead(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
+		Status = FileEntry->ReadSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) {
-			FileEntry->Position = OldPosition;
 			return Status;
 		}
-		FileEntry->Position = OldPosition;
 
 		memcpy(LocalPointer, Buffer, Length);
 
-		Status = DeblockerWrite(FileId, LocalPointer, SectorSize, &TransferCount);
-		if (ARC_SUCCESS(Status) && TransferCount != SectorSize) Status = _EIO;
-		FileEntry->Position = OldPosition;
+		Status = FileEntry->WriteSectors(FileEntry, CurrentSector + SectorStart, 1, LocalPointer);
 		if (ARC_FAIL(Status)) return Status;
 
 		*Count += Length;
