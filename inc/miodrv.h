@@ -1,15 +1,40 @@
 // MIO detection routines for drivers
 // Scans the PCI bus to look for supported MIO cards;
 // provides to caller its type and base address.
-// Only supports GrandCentral, Heathrow/Paddington, and KeyLargo.
+// Only supports GrandCentral, Heathrow/Paddington, and KeyLargo (and derivatives)
 
 typedef enum _MIO_TYPE {
 	MIO_UNKNOWN,
 	MIO_GRANDCENTRAL,
 	MIO_OHARE,
 	MIO_PADDINGTON,
-	MIO_KEYLARGO
+	MIO_KEYLARGO,
+	MIO_INTREPID
 } MIO_TYPE;
+
+// INTREPID (the mio device, not the entire ASIC) is a keylargo derivative.
+// Only has one IDE controller in the MIO device and interrupts moved around.
+// Entries marked [*] is what has changed from keylargo.
+// (MPIC at 0x40000)
+// +0x10000 - i2s
+// +0x11000 -
+// +0x12000 - legacy serial
+// +0x13000 - serial
+// +0x14000 - [*] nothing
+// +0x15000 - timer
+// +0x16000 - pxi
+// +0x17000 -
+// +0x18000 - i2c
+// +0x19000 -
+// +0x1a000 - [*] cardbus
+// +0x1b000 - [*] cardbus i/o
+// +0x1c000 -
+// +0x1d000 -
+// +0x1e000 -
+// +0x1f000 - [*] nothing
+// +0x20000 - [*] ata (irq 24, dma 8)
+// +0x21000 - [*] nothing
+// +0x30000 - [*] cardbus mmio
 
 // KEYLARGO has:
 // (MPIC at 0x40000)
@@ -143,9 +168,6 @@ static MIO_TYPE MioDoDetect(PPHYSICAL_ADDRESS BaseAddress) {
 				DeviceID != 0x0017 && // paddington
 				DeviceID != 0x0022 && // keylargo
 				DeviceID != 0x0025 && // keylargo (pangaea)
-				// BUGBUG: is intrepid really supported?
-				// i think the MIO part might be same based on some info?
-				// the only thing that's different is USB and maybe some PXI commands (not anything HAL uses)?
 				DeviceID != 0x003e    // keylargo (intrepid)
 				// K2 (0x0041) and Shasta (0x004F) are PMG5, unsupported
 			) continue;
@@ -153,6 +175,7 @@ static MIO_TYPE MioDoDetect(PPHYSICAL_ADDRESS BaseAddress) {
 			// this is a supported MIO controller.
 			if (DeviceID == 0x0002) RetVal = MIO_GRANDCENTRAL;
 			else if (DeviceID == 0x0007) RetVal = MIO_OHARE;
+			else if (DeviceID == 0x003e) RetVal = MIO_INTREPID;
 			else RetVal = (DeviceID < 0x0020) ? MIO_PADDINGTON : MIO_KEYLARGO;
 			if (BaseAddress != NULL) BaseAddress->LowPart = PciData->u.type0.BaseAddresses[0];
 			return RetVal;
