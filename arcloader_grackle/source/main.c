@@ -939,7 +939,7 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	#if SYSTEM_LITTLE
 	NV_PRMCIO_CRTC[1] &= ~(1 << 7); // unset big endian
 	#else
-	NV_PRCMIO_CRTC[1] |= (1 << 7); // set big endian
+	NV_PRMCIO_CRTC[1] |= (1 << 7); // set big endian
 	#endif
 	__asm__ volatile ("eieio");
 	// Relock the CRTC.
