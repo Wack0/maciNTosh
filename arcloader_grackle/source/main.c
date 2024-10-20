@@ -976,7 +976,7 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	__asm__ volatile ("eieio");
 	// Set some CRTC register bit for both CRTCs
 	*(volatile ULONG*)(PCRTC + 0x804) |= (1 << 31); // First
-	*(volatile ULONG*)(PCRTC + 0x2804) ||= (1 << 31); // And second
+	*(volatile ULONG*)(PCRTC + 0x2804) |= (1 << 31); // And second
 	__asm__ volatile ("eieio");
 	#endif
 	
