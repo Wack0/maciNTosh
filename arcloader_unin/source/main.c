@@ -928,11 +928,9 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	NV_PRMCIO_CRTC[1] = 0x57; // NV_CIO_SR_UNLOCK_RW
 	__asm__ volatile ("eieio");
 	// OS9 driver sets the framebuffer offset here
-	#if 0
 	volatile U32LE* NV_PCRTC_START = (volatile ULONG*)(PCRTC + 0x800);
 	NV_PCRTC_START->v = 0;
 	__asm__ volatile ("eieio");
-	#endif
 	// Set CRTC pixel depth 32bpp
 	NV_PRMCIO_CRTC[0] = 0x28;
 	__asm__ volatile ("eieio");
@@ -1031,7 +1029,12 @@ static void FbGetDetails(OFHANDLE Screen, PHW_DESCRIPTION HwDesc, bool OverrideS
 		FbAddr = Arg.Int;
 	}
 	
-	if (OverrideStride) Stride *= sizeof(ULONG);
+	if (OverrideStride) {
+		Stride *= sizeof(ULONG);
+		ULONG FbOffset = 0;
+		if (ARC_SUCCESS(OfGetPropInt(Screen, "fboffset", &FbOffset)))
+			FbAddr -= FbOffset;
+	}
 	
 	// Wipe the screen
 	memset((PVOID)FbAddr, 0, Height * Stride);
