@@ -110,11 +110,8 @@ after_invalidate_tlb:
 	isync
 	
 	// DBAT3 is used for whatever PCI access, set up by DSI exception handler.
-	// The DSI exception handler currently only works on G4 systems.
 	// Map the 256MB of physical memory containing the framebuffer using DBAT3.
-	// Uni-North systems using PPC750 are Pismo plus a bunch of iBooks (clamshell, snow) only;
-	// and only needs one additional PCI address space area mapped (for framebuffer) anyway,
-	// so this is enough for PPC750 systems not to hit DSI at all.
+	// Any system that doesn't use MMIO outside of these mapped BATs will therefore not need to use the DSI exception handler at all.
 	mr r3, r30
 	ori r3, r3, 0x2a
 	mr r4, r30
@@ -137,6 +134,9 @@ after_invalidate_tlb:
 	rlwinm r3, r3, 0, 1, 31
 	li r4, 0x300
 	bl copy_32
+	li r0, (vector_dsi_end - vector_dsi) / 32
+	li r3, 0x300
+	bl cache_invalidate
 	
 #if 0 // ISI isn't needed, we only want to map PCI address space for data, not for instruction.
 	// copy vector_isi to 0x400
@@ -146,6 +146,9 @@ after_invalidate_tlb:
 	rlwinm r3, r3, 0, 1, 31
 	li r4, 0x400
 	bl copy_32
+	li r0, (vector_isi_end - vector_isi) / 32
+	li r3, 0x400
+	bl cache_invalidate
 #endif
 	
 	
@@ -168,6 +171,16 @@ copy_loop:
 	addi r3,r3,4
 	addi r4,r4,4
 	bdnz+ copy_loop
+	blr
+
+cache_invalidate: // r0=length, r3=dest
+	mtctr r0
+cache_loop:
+	dcbst 0, r3
+	sync
+	icbi 0, r3
+	addi r3,r3,32
+	bdnz+ cache_loop
 	blr
 
 // DSI and ISI exceptions
