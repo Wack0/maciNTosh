@@ -578,6 +578,299 @@ static bool FbAtiSwapEndian(OFHANDLE Screen) {
 }
 #endif
 
+static ULONG RoundDiv(ULONG lhs, ULONG rhs) {
+	return ((lhs+(rhs/2))/rhs);
+}
+
+static int freq(int a1, int a2, int a3, int a4, int a5) {
+	double v5 = (double)(a5 * a1);
+	if (v5 == 0.0) return 0;
+	else return (int)((double)(a3 * a4 * a2) / v5);
+}
+
+static bool FbSetDdaRage4(ULONG BaseAddress) {
+	// let's try doing what linux does here:
+	// get the timings
+	static const UCHAR PostDivSet[] = { 0, 1, 2, 4, 8, 3, 6, 12 };
+	static const UCHAR TableOs9Driver[] = { 1, 2, 4, 8, 3, 0, 6, 0xC };
+	ULONG x_mpll_ref_fb_div;
+	ULONG xclk_cntl;
+	ULONG Nx, M;
+	
+	ULONG ref_clk = 2950;
+	
+	volatile UCHAR* CLOCK_CNTL_INDEX = (volatile UCHAR*)(BaseAddress + 0x8);
+	volatile U32LE* CLOCK_CNTL_DATA = (volatile U32LE*)(BaseAddress + 0xC);
+	
+	CLOCK_CNTL_INDEX[0] = 0x0A;
+	__asm__ volatile ("eieio");
+	x_mpll_ref_fb_div = CLOCK_CNTL_DATA->v;
+	CLOCK_CNTL_INDEX[0] = 0x0D;
+	__asm__ volatile ("eieio");
+	xclk_cntl = CLOCK_CNTL_DATA->v & 0x7;
+	
+	CLOCK_CNTL_INDEX[0] = 0x03;
+	__asm__ volatile ("eieio");
+	ULONG pll_3 = CLOCK_CNTL_DATA->v & 0x3ff;
+	ULONG vclk_div = CLOCK_CNTL_INDEX[1] & 3;
+	CLOCK_CNTL_INDEX[0] = 4 + vclk_div;
+	__asm__ volatile ("eieio");
+	ULONG ppll_div = CLOCK_CNTL_DATA->v;
+	ULONG tbl_val = TableOs9Driver[(ppll_div >> 16) & 7];
+	ULONG ppll_div_low = ppll_div & 0x7FF;
+	ULONG vclk = freq(tbl_val, ppll_div_low, 1, 2950, pll_3);
+	
+	
+	Nx = (x_mpll_ref_fb_div & 0x00ff00) >> 8;
+	M  = x_mpll_ref_fb_div & 0x0000ff;
+	
+	ULONG xclk = RoundDiv(2 * Nx * ref_clk, M * (ULONG)PostDivSet[xclk_cntl]);
+	if (xclk == 0) xclk = 0x1d4d;
+	ULONG fifo_width = 128;
+	ULONG fifo_depth = 32;
+	
+	volatile U32LE* MEM_CNTL = (volatile U32LE*)(BaseAddress + 0x140);
+	ULONG mem_type = MEM_CNTL->v & 3;
+	
+	int x, b, p, ron, roff;
+	ULONG n, d, bpp;
+	bpp = 32;
+	
+	n = xclk * fifo_width;
+	d = vclk * bpp;
+	x = RoundDiv(n, d);
+
+	UCHAR MB = 4;
+	UCHAR Trp = 3;
+	UCHAR Tr2w = 1;
+	UCHAR Rloop = 16;
+	UCHAR Trcd, Twr, CL;
+	
+	switch (mem_type) {
+		case 0:
+			Trcd = 3;
+			Twr = 1;
+			CL = 3;
+			break;
+		case 1:
+			Trcd = 1;
+			Twr = 1;
+			CL = 2;
+			break;
+		case 2:
+		default:
+			Trcd = 3;
+			Twr = 2;
+			CL = 2;
+			break;
+	}
+	
+	ron = 4 * MB +
+		3 * (Trcd - 2) +
+		2 * Trp +
+		Twr +
+		CL +
+		Tr2w +
+		x;
+	
+	b = 0;
+	for (; x != 0; b++) x >>= 1;
+	p = b + 1;
+	
+	ron <<= (11 - p);
+	n <<= (11 - p);
+	x = RoundDiv(n, d);
+	roff = x * (fifo_depth - 4);
+	
+	if ((ron + Rloop) >= roff) return false;
+	
+	volatile U16LE* DSP_CONFIG = (volatile U16LE*)(BaseAddress + 0x2E0);
+	DSP_CONFIG[0].v = x;
+	DSP_CONFIG[1].v = p | (Rloop << 4);
+	volatile U16LE* DSP_ON_OFF = (volatile U16LE*)(BaseAddress + 0x2E4);
+	DSP_ON_OFF[0].v = roff;
+	DSP_ON_OFF[1].v = ron;
+	__asm__ volatile ("eieio");
+	return true;
+}
+
+static bool FbSetDepthAti(OFHANDLE Screen) {
+	// Get the screen width, needed later.
+	ULONG Width;
+	if (ARC_FAIL(OfGetPropInt(Screen, "width", &Width))) return false;
+	
+	// Get the parent of screen.
+	OFHANDLE GfxDevice = OfParent(Screen);
+	if (GfxDevice == OFNULL) return false;
+	
+	// Check for "ATY,Fcode" property
+	StdOutWrite("\r\n");
+	if (!OfPropExists(GfxDevice, "ATY,Fcode") && !OfPropExists(GfxDevice, "ATY,Rom#")) {
+		if (OfPropExists(Screen, "ATY,Fcode") || OfPropExists(Screen, "ATY,Rom#")) {
+			GfxDevice = Screen;
+		} else {
+			// this isn't ATI fcode, this isn't an ATI device
+			return false;
+		}
+	}
+	
+	// GfxDevice is now the base device.
+	// get the assigned-addresses, of which there should be 3, allocate 4 just in case
+	ULONG AssignedAddress[4 * 5];
+	ULONG AddrLength = sizeof(AssignedAddress);
+	ARC_STATUS Status = OfGetProperty(GfxDevice, "assigned-addresses", AssignedAddress, &AddrLength);
+	if (ARC_FAIL(Status)) {
+		return false;
+	}
+	
+	// Rage4 has registers in different places, and uses different physmem block for its MMIO
+	bool IsRage4 = false;
+	{
+		char NameBuffer[32];
+		ULONG NameBufLen = sizeof(NameBuffer);
+		Status = OfGetProperty(GfxDevice, "name", NameBuffer, &NameBufLen);
+		if (ARC_FAIL(Status)) return false;
+		// BUGBUG: other Rage4 cards than this could get here?
+		IsRage4 = strstr(NameBuffer, "ATY,Rage128") != NULL;
+	}
+	
+	ULONG BaseAddress = 0;
+	for (ULONG i = 0; i < AddrLength / 5; i++) {
+		PULONG Aperture = &AssignedAddress[i * 5];
+		if (!IsRage4 && Aperture[4] < 0x01000000) continue; // 16MB vram area
+		if (IsRage4 && (Aperture[0] & 0xff) != 0x18) continue; // rage4 MMIO area.
+		BaseAddress = Aperture[2];
+		break;
+	}
+	
+	if (BaseAddress < 0x80800000) {
+		return false;
+	}
+	if (!IsRage4) BaseAddress += 0x7ffc00;
+	
+	// determine register offsets
+	ULONG off_CRTC_GEN_CNTL = (IsRage4 ? 0x50 : 0x1C);
+	ULONG off_CRTC_H_SYNC_STRT_WID = (IsRage4 ? 0x204 : 4);
+	ULONG off_DAC_REGS = (IsRage4 ? 0xB0 : 0xC0);
+	ULONG off_DAC_CNTL = (IsRage4 ? 0xB4 : 0xC4);
+	ULONG off_DSP_CONFIG = (IsRage4 ? 0x2E0 : 0x20);
+	ULONG off_DSP_ON_OFF = (IsRage4 ? 0x2E4 : 0x24);
+	
+	// power off the CRTC while we make changes:
+	volatile U32LE* CRTC_GEN_CNTL = (volatile U32LE*)(BaseAddress + off_CRTC_GEN_CNTL);
+	CRTC_GEN_CNTL->v = (CRTC_GEN_CNTL->v & ~(1 << 25));
+	__asm__ volatile ("eieio");
+	
+	// change the mode by using the DAC registers, some cards may require this
+	volatile UCHAR* DAC_REGS = (volatile UCHAR*)(BaseAddress + off_DAC_REGS);
+	volatile U32LE* DAC_CNTL = (volatile U32LE*)(BaseAddress + off_DAC_CNTL);
+	ULONG ChipId = IsRage4 ? 0x5200 : ((volatile U32LE*)(BaseAddress + 0xE0))->v;
+	USHORT DeviceId = ChipId & 0xFFFF;
+	UCHAR ChipRev = (ChipId >> 24);
+	// Emulator fix: dingusppc doing things in a different way as usual:
+	if (ChipId == 0) {
+		// Set the upper DAC registers
+		DAC_CNTL->v |= 1;
+		__asm__ volatile ("eieio");
+		// Make sure we actually set it.
+		if ((DAC_CNTL->v & 1) != 0) {
+			// Set DAC indirect register index: PIX_FORMAT (register 10)
+			DAC_REGS[0] = 10;
+			__asm__ volatile ("eieio");
+			DAC_REGS[1] = 0;
+			__asm__ volatile ("eieio");
+			// Write to DAC register PIX_FORMAT to set 32bpp
+			DAC_REGS[2] = 6;
+			__asm__ volatile ("eieio");
+		}
+ 	}
+	
+	// CRTC_PIX_WIDTH = 32bpp
+	CRTC_GEN_CNTL->v = (CRTC_GEN_CNTL->v & ~(7 << 8)) | (6 << 8);
+	__asm__ volatile ("eieio");
+	
+#if 0
+	// fix the hsync start+width for 32bpp
+	// assumption: was set to 8bpp
+	if (IsRage4) {
+		volatile U16LE* CRTC_H_SYNC_STRT_WID = (volatile U16LE*)(BaseAddress + off_CRTC_H_SYNC_STRT_WID);
+		CRTC_H_SYNC_STRT_WID->v -= (18 - 5);
+	} else {
+		volatile UCHAR* CRTC_H_SYNC_STRT_WID = (volatile UCHAR*)(BaseAddress + off_CRTC_H_SYNC_STRT_WID);
+		CRTC_H_SYNC_STRT_WID[0] -= (18 >> 3) - (5 >> 3);
+		CRTC_H_SYNC_STRT_WID[1] = 5;
+	}
+#endif
+	
+	bool ReallyHasDsp = false;
+	bool Success = true;
+	// If the card isn't the earliest mach64 type then we need to set the dsp correctly :(
+	if (DeviceId != 0 && DeviceId != 0x4758 && DeviceId != 0x4358 && DeviceId != 0x4354 && DeviceId != 0x4554) {
+		ReallyHasDsp = true;
+		if (DeviceId == 0x5654 || DeviceId == 0x4754) {
+			ReallyHasDsp = (ChipRev & 7) > 0;
+		}
+		if (IsRage4) {
+			Success = FbSetDdaRage4(BaseAddress);
+		}
+		else if (ReallyHasDsp) {
+			// BUGBUG: this is correct for Lombard, what about other systems???
+			volatile U16LE* DSP_CONFIG = (volatile U16LE*)(BaseAddress + off_DSP_CONFIG);
+			volatile U16LE* DSP_ON_OFF = (volatile U16LE*)(BaseAddress + off_DSP_ON_OFF);
+			USHORT configHigh = DSP_CONFIG[1].v;
+			USHORT loop_latency = configHigh & 0xF;
+			USHORT precision = (configHigh >> 4) & 0x7;
+			precision /= 2;
+			precision <<= 4;
+			DSP_CONFIG[1].v = loop_latency | precision;
+			DSP_ON_OFF[0].v *= 2;
+			DSP_ON_OFF[1].v *= 2;
+			__asm__ volatile ("eieio");
+		}
+	}
+	
+	// deal with the DAC
+	//DAC_REGS[4] &= ~0x20; __asm__ volatile ("eieio");
+	DAC_REGS[0] = 0;
+	__asm__ volatile ("eieio");
+	
+	for (ULONG i = 0; i < sizeof(sc_GammaTable); i++) {
+		if (IsRage4) {
+			ULONG value = sc_GammaTable[i];
+			value |= (value << 8) | (value << 16);
+			DAC_CNTL->v = value; __asm__ volatile ("eieio");
+			continue;
+		}
+		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+		DAC_REGS[1] = sc_GammaTable[i]; __asm__ volatile ("eieio");
+		if (ReallyHasDsp) {
+			DAC_REGS[2] = 0xFF;
+			__asm__ volatile ("eieio");
+		}
+	}
+	
+	
+	// power the CRTC back on
+	CRTC_GEN_CNTL->v = (CRTC_GEN_CNTL->v | (1 << 25));
+	__asm__ volatile ("eieio");
+
+	// swap the card endianness, different for Rage3 and Rage4
+	// let this be the last access as this is going to swap the endianness for both apertures
+	if (IsRage4) {
+		volatile U32LE* CNFG_CNTL = (volatile U32LE*)(BaseAddress + 0xE0);
+		CNFG_CNTL->v = (CNFG_CNTL->v & ~3) | 2;
+		__asm__ volatile ("eieio");
+	} else {
+		volatile UCHAR* MEM_CNTL = (volatile UCHAR*)(BaseAddress + 0xB0);
+		MEM_CNTL[3] = (MEM_CNTL[3] & ~0xF) | (2 << 0) | (2 << 2);
+		__asm__ volatile ("eieio");
+	}
+	
+	// all done :)
+	return Success;
+}
+
 static bool FbSetDepthNv(OFHANDLE Screen) {
 	// Get the current stride, needed later.
 	ULONG Stride;
@@ -1233,7 +1526,7 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 			// that way we don't have to access vram in a byteswapped way
 			FbGetDetails(Screen, Desc, false);
 		} else {
-			if (!FbSetDepthNv(Screen)) {
+			if (!FbSetDepthNv(Screen) || !FbSetDepthAti(Screen)) {
 				StdOutWrite("Could not set up 32bpp framebuffer\r\n");
 				OfExit();
 				return -12;
