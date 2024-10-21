@@ -1526,7 +1526,7 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 			// that way we don't have to access vram in a byteswapped way
 			FbGetDetails(Screen, Desc, false);
 		} else {
-			if (!FbSetDepthNv(Screen) || !FbSetDepthAti(Screen)) {
+			if (!FbSetDepthNv(Screen) && !FbSetDepthAti(Screen)) {
 				StdOutWrite("Could not set up 32bpp framebuffer\r\n");
 				OfExit();
 				return -12;
