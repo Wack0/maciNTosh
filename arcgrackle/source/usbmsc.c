@@ -34,6 +34,8 @@
 
 #include "pxi.h"
 
+void fatal(const char* ptr);
+
 #define htonl(x) __builtin_bswap32(x)
 #define ntohl(x) __builtin_bswap32(x)
 #define htonw(x) __builtin_bswap16(x)

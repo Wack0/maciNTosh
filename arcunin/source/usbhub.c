@@ -29,6 +29,8 @@
 
 #include "usb.h"
 
+void fatal(const char* ptr);
+
 // assume that host_to_device is overwritten if necessary
 #define DR_PORT gen_bmRequestType(host_to_device, class_type, other_recp)
 #define PORT_RESET 0x4

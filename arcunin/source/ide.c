@@ -21,6 +21,7 @@
 
 #include "ide.h"
 #include "hdreg.h"
+#include "timer.h"
 
 #define __be32_to_cpu(x) ((PU32BE)(ULONG)&(x))->v
 

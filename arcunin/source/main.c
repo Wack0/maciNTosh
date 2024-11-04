@@ -18,6 +18,7 @@
 #include "getstr.h"
 //#include "ppchook.h"
 #include "hwdesc.h"
+#include "timer.h"
 
 #include "pxi.h"
 #include "usbheap.h"
