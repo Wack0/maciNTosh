@@ -808,5 +808,4 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	ArcMain();
 	// should never reach here
 	while (1) {}
-	return 0;
 }

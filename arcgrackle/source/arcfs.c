@@ -2295,7 +2295,7 @@ static FS_METADATA s_Metadata[FILE_TABLE_SIZE] = { 0 };
 
 DSTATUS disk_initialize(void) { return RES_OK; }
 
-DRESULT disk_readp(ULONG DeviceId, BYTE* buff, DWORD sector, UINT offset, UINT count) {
+DRESULT disk_readp(UINT DeviceId, BYTE* buff, DWORD sector, UINT offset, UINT count) {
 	if (DeviceId >= FILE_TABLE_SIZE) return RES_PARERR;
 	PFS_METADATA Meta = &s_Metadata[DeviceId];
 	if (Meta->Type != FS_FAT) return RES_PARERR;
@@ -2333,7 +2333,7 @@ DRESULT disk_readp(ULONG DeviceId, BYTE* buff, DWORD sector, UINT offset, UINT c
 	return RES_OK;
 }
 
-DRESULT disk_writep(ULONG DeviceId, const BYTE* buff, DWORD sc) {
+DRESULT disk_writep(UINT DeviceId, const BYTE* buff, DWORD sc) {
 	if (DeviceId >= FILE_TABLE_SIZE) return RES_PARERR;
 	PFS_METADATA Meta = &s_Metadata[DeviceId];
 	if (Meta->Type != FS_FAT) return RES_PARERR;
