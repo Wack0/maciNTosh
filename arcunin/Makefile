@@ -50,7 +50,7 @@ $(TARGET): $(OBJS)
 	@echo "  LINK      $@"
 	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 	@cp $(TARGET) $(TARGET:%.elf=%_unstripped.elf)
-	@strip $(TARGET)
+	@$(STRIP) $(TARGET)
 
 ifneq ($(LDSCRIPT),)
 $(TARGET): $(LDSCRIPT)
