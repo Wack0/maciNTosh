@@ -922,7 +922,9 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	ULONG PCRTC = BaseAddress + 0x600000;
 	volatile UCHAR* NV_PRMCIO_CRTC = (volatile UCHAR*)(PCRTC + 0x13D4);
 	// Unlock the CRTC.
-	// BUGBUG: OS9 driver sets the index twice for some reason.
+	NV_PRMCIO_CRTC[0] = 0x1F;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1]; // OS9 driver reads the value then immediately discards it by the following write. Maybe some cards need this?
 	NV_PRMCIO_CRTC[0] = 0x1F;
 	__asm__ volatile ("eieio");
 	NV_PRMCIO_CRTC[1] = 0x57; // NV_CIO_SR_UNLOCK_RW
@@ -936,7 +938,10 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	// Set CRTC pixel depth 32bpp
 	NV_PRMCIO_CRTC[0] = 0x28;
 	__asm__ volatile ("eieio");
-	NV_PRMCIO_CRTC[1] = 0x03;
+	UCHAR PixelDepth7 = NV_PRMCIO_CRTC[1] & 0x80;
+	NV_PRMCIO_CRTC[0] = 0x28;
+	__asm__ volatile ("eieio");
+	NV_PRMCIO_CRTC[1] = 0x03 | PixelDepth7;
 	__asm__ volatile ("eieio");
 	// Set PRAMDAC_GENERAL_CONTROL
 	volatile U32LE* NV_PRAMDAC_GENERAL_CONTROL = (volatile ULONG*)(PCRTC + 0x80600);
