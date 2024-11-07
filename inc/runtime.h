@@ -87,12 +87,12 @@ static inline ULONG MmioRead32(PVOID addr)
 	ULONG x;
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; lwbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
+		"lwbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
 		return x;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 4);
 	__asm__ __volatile__(
-		"sync ; lwz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
+		"lwz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
 	return x;
 }
 
@@ -100,12 +100,12 @@ static inline void MmioWrite32(PVOID addr, ULONG x)
 {
 	if (_Mmio_IsLittleEndian()) {
 		__asm__ __volatile__(
-			"sync ; stwbrx %0,0,%1 ; eieio" : : "r"(x), "b"(addr));
+			"stwbrx %0,0,%1 ; eieio" : : "r"(x), "b"(addr));
 		return;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 4);
 	__asm__ __volatile__(
-		"sync ; stw %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
+		"stw %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
 }
 
 static inline ULONG MmioRead32L(PVOID addr)
@@ -113,12 +113,12 @@ static inline ULONG MmioRead32L(PVOID addr)
 	ULONG x;
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; lwz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
+		"lwz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
 		return x;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 4);
 	__asm__ __volatile__(
-		"sync ; lwbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
+		"lwbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
 	return x;
 }
 
@@ -126,12 +126,12 @@ static inline void MmioWrite32L(PVOID addr, ULONG x)
 {
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; stw %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
+		"stw %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
 		return;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 4);
 	__asm__ __volatile__(
-		"sync ; stwbrx %0,0,%1 ; eieio" : : "r"(x), "r"(addr));
+		"stwbrx %0,0,%1 ; eieio" : : "r"(x), "r"(addr));
 }
 
 static inline USHORT MmioRead16(PVOID addr)
@@ -139,12 +139,12 @@ static inline USHORT MmioRead16(PVOID addr)
 	USHORT x;
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; lhbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
+		"lhbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
 		return x;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 2);
 	__asm__ __volatile__(
-		"sync ; lhz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
+		"lhz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
 	return x;
 }
 
@@ -152,12 +152,12 @@ static inline void MmioWrite16(PVOID addr, USHORT x)
 {
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; sthbrx %0,0,%1 ; eieio" : : "r"(x), "b"(addr));
+		"sthbrx %0,0,%1 ; eieio" : : "r"(x), "b"(addr));
 		return;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 2);
 	__asm__ __volatile__(
-		"sync ; sth %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
+		"sth %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
 }
 
 static inline USHORT MmioRead16L(PVOID addr)
@@ -165,12 +165,12 @@ static inline USHORT MmioRead16L(PVOID addr)
 	USHORT x;
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; lhz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
+		"lhz %0,0(%1) ; sync" : "=r"(x) : "b"(addr));
 		return x;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 2);
 	__asm__ __volatile__(
-		"sync ; lhbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
+		"lhbrx %0,0,%1 ; sync" : "=r"(x) : "r"(addr));
 	return x;
 }
 
@@ -178,18 +178,18 @@ static inline void MmioWrite16L(PVOID addr, USHORT x)
 {
 	if (_Mmio_IsLittleEndian()) {
 	__asm__ __volatile__(
-		"sync ; sth %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
+		"sth %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
 		return;
 	}
 	addr = _Mmio_MungeAddressForBig(addr, 2);
 	__asm__ __volatile__(
-		"sync ; sthbrx %0,0,%1 ; eieio" : : "r"(x), "r"(addr));
+		"sthbrx %0,0,%1 ; eieio" : : "r"(x), "r"(addr));
 }
 
 static inline void MmioWrite8(PVOID addr, UCHAR x) {
 	if (!_Mmio_IsLittleEndian()) addr = _Mmio_MungeAddressForBig(addr, 1);
 	__asm__ __volatile__(
-		"sync ; stb %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
+		"stb %0,0(%1) ; eieio" : : "r"(x), "b"(addr));
 }
 
 #define __MMIO_BUF_READ_BODY(func) \
@@ -248,7 +248,7 @@ static inline ULONG NativeRead32(PVOID addr)
 	if (_Mmio_IsLittleEndian()) return *(PULONG)addr;
 	if (!_Mmio_IsLittleEndian()) addr = _Mmio_MungeAddressForBig(addr, 4);
 	__asm__ __volatile__(
-		"sync ; lwz %0,0(%1)" : "=r"(x) : "b"(addr));
+		"lwz %0,0(%1)" : "=r"(x) : "b"(addr));
 	return x;
 }
 
