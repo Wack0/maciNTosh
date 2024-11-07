@@ -786,7 +786,7 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 		virt_to_phys(first_td), virt_to_phys(cur));
 
 	/* activate schedule */
-	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcControlHeadED, __cpu_to_le32(virt_to_phys(head)));
+	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcBulkHeadED, __cpu_to_le32(virt_to_phys(head)));
 	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcControl, READ_OPREG(OHCI_INST(ep->dev->controller), HcControl) | __cpu_to_le32(BulkListEnable));
 	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcInterruptStatus, __cpu_to_le32((1u << 30) | 0x7F));
 	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcCommandStatus, __cpu_to_le32(BulkListFilled));
