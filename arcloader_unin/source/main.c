@@ -1445,10 +1445,10 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 	Desc->MrFlags = s_MrpFlags;
 	
 	bool HasPciBridge = false;
+	bool InQemu = (s_MrpFlags & MRF_IN_EMULATOR) != 0;
 	{
 		// Get the PCI slot interrupts.
 		bool PciSuccess = false;
-		bool InQemu = (s_MrpFlags & MRF_IN_EMULATOR) != 0;
 		do {
 			// if pci1/@d/mac-io exists we need to get the vectors based on the bridge
 			OFHANDLE Pci1 = OFNULL;
@@ -1513,6 +1513,9 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 				if (Usb != OFNULL) {
 					Desc->UsbOhciStart[1] = UsbGetBase(Usb);
 				}
+			} else if (InQemu) {
+				Usb = OfFindDevice("/pci/usb");
+				if (Usb != OFNULL) Desc->UsbOhciStart[0] = UsbGetBase(Usb);
 			}
 		}
 	}
