@@ -47,9 +47,10 @@ void sync_before_exec(const void* p, ULONG len);
 static void endian_swap64(void* buf, ULONG len) {
 	ULONG* buf32 = (ULONG*)buf;
 	for (ULONG i = 0; i < len; i += sizeof(ULONG) * 2) {
-		ULONG buf0 = __builtin_bswap32(buf32[i + 0]);
-		buf32[i + 0] = __builtin_bswap32(buf32[i + 1]);
-		buf32[i + 1] = buf0;
+		ULONG idx = i / sizeof(ULONG);
+		ULONG buf0 = __builtin_bswap32(buf32[idx + 0]);
+		buf32[idx + 0] = __builtin_bswap32(buf32[idx + 1]);
+		buf32[idx + 1] = buf0;
 	}
 }
 
