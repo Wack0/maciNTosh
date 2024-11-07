@@ -17,7 +17,9 @@ The repository additionally contains the source code for the ARC firmware and it
 * PowerBook G3 Firewire *"Pismo"*
 * iBook G3
 * iBook G4
+** The mid-2005 iBook G4 (`PowerBook6,7`) uses a USB mouse internally and therefore mouse will not work yet.
 * PowerBook G4
+** The early 2005 and later PowerBook G4s (`PowerBook6,8` and `PowerBook5,6` and later) use a USB keyboard and mouse and are therefore currently not practically supported.
 
 The following systems are theoretically supported, but currently not practically supported due to the lack of USB drivers:
 
