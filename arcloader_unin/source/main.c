@@ -1447,6 +1447,7 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 	{
 		// Get the PCI slot interrupts.
 		bool PciSuccess = false;
+		bool InQemu = (s_MrpFlags & MRF_IN_EMULATOR) != 0;
 		do {
 			// if pci1/@d/mac-io exists we need to get the vectors based on the bridge
 			OFHANDLE Pci1 = OFNULL;
@@ -1454,12 +1455,17 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 				HasPciBridge = true;
 				Pci1 = OfFindDevice("pci1/@d");
 			} else Pci1 = OfFindDevice("pci1");
+			if (Pci1 == OFNULL && InQemu)
+				Pci1 = OfFindDevice("/pci@f2000000");
 			if (Pci1 == OFNULL) break;
 			ULONG InterruptMapMask[4];
 			ULONG MaskLen = sizeof(InterruptMapMask);
 			if (ARC_FAIL(OfGetProperty(Pci1, "interrupt-map-mask", InterruptMapMask, &MaskLen))) break;
 			if (MaskLen != sizeof(InterruptMapMask)) break;
-			if (InterruptMapMask[1] != 0 || InterruptMapMask[2] != 0 || InterruptMapMask[3] != 0) break;
+			bool Mask3 = false;
+			if (InQemu) Mask3 = InterruptMapMask[3] == 7;
+			else Mask3 = InterruptMapMask[3] == 0;
+			if (InterruptMapMask[1] != 0 || InterruptMapMask[2] != 0 || !Mask3) break;
 			ULONG MaskMask = InterruptMapMask[0];
 			ULONG MaskShift = 0;
 			// Determine the value to shift to find the actual slot number

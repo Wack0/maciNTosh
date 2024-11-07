@@ -765,11 +765,11 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	setup_timers(Desc->DecrementerFrequency);
 	// PXI.
 	printf("Init pxi...\r\n");
-	PxiInit(PciPhysToVirt(Desc->MacIoStart + 0x16000));
+	PxiInit(PciPhysToVirt(Desc->MacIoStart + 0x16000), (Desc->MrFlags & MRF_IN_EMULATOR) != 0);
 	// ADB.
-	int adb_bus_init();
+	int adb_bus_init(bool IsEmulator);
 	printf("Init adb...\r\n");
-	adb_bus_init();
+	adb_bus_init((Desc->MrFlags & MRF_IN_EMULATOR) != 0);
 
 #if 0 // usb driver is for now broken :/
 	// USB controllers.

@@ -107,6 +107,7 @@ enum {
 };
 
 static PPXI_REGISTERS s_PxiRegs = NULL;
+static bool s_InEmulator = false;
 
 static bool PxipIsBusy(void) {
 	return (MmioRead8(&s_PxiRegs->BufB) & PXI_PORT_ACK) == 0;
@@ -184,8 +185,9 @@ UCHAR PxiSendSyncRequest(UCHAR Command, PUCHAR Arguments, UCHAR ArgLength, BOOLE
 	return RealResponseLength;
 }
 
-void PxiInit(PVOID MmioBase) {
+void PxiInit(PVOID MmioBase, bool InEmulator) {
 	s_PxiRegs = (PPXI_REGISTERS)MmioBase;
+	s_InEmulator = InEmulator;
 
 	MmioWrite8(&s_PxiRegs->BufB, MmioRead8(&s_PxiRegs->BufB) | PXI_PORT_REQ);
 	MmioWrite8(&s_PxiRegs->DirB, (MmioRead8(&s_PxiRegs->DirB) & ~PXI_PORT_ACK) | PXI_PORT_REQ);
@@ -273,7 +275,11 @@ ULONG PxiAdbCommand(PUCHAR Command, ULONG Length, PUCHAR Response) {
 		UCHAR IntStatus = MmioRead8(&s_PxiRegs->IFR);
 		// Ensure any interrupt is acked.
 		MmioWrite8(&s_PxiRegs->IFR, ~PXI_IE_SET);
-		if (IntStatus == 0) continue;
+		if (IntStatus == 0 && !s_InEmulator) continue;
+		if (s_InEmulator && RespLen > 2) {
+			memcpy(Response, &Buffer[3], RespLen - 3);
+			return RespLen - 3;
+		}
 		//printf("[PXI_ADB]: %02x - %d %02x %02x %02x %02x\r\n", Command[0], RespLen, Buffer[0], Buffer[1], Buffer[2], Buffer[3]);
 		memcpy(Response, &Buffer[2], RespLen - 2);
 		return RespLen - 2;

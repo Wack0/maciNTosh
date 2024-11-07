@@ -67,7 +67,7 @@ void adb_bus_reset ();
 adb_bus_t *adb_bus_new (void *host,
                         int (*req)(void *host, const uint8_t *snd_buf,
                                    int len, uint8_t *rcv_buf));
-int adb_bus_init ();
+int adb_bus_init (bool IsEmulator);
 
 static inline int adb_reset ()
 {

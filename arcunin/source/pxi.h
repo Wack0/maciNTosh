@@ -3,7 +3,7 @@
 
 UCHAR PxiSendSyncRequest(UCHAR Command, PUCHAR Arguments, UCHAR ArgLength, BOOLEAN VariadicIn, PUCHAR Response, UCHAR ResponseLength, BOOLEAN VariadicOut);
 
-void PxiInit(PVOID MmioBase);
+void PxiInit(PVOID MmioBase, bool InEmulator);
 
 ULONG PxiRtcRead(void);
 void PxiRtcWrite(ULONG Value);

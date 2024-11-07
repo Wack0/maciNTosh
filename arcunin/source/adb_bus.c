@@ -35,7 +35,7 @@ static adb_dev_t* g_adb_head;
  * ADB_manager Apple documentation
  */
 
-int adb_bus_init(void)
+int adb_bus_init(bool IsEmulator)
 {
     char buf[64];
     uint8_t buffer[ADB_BUF_SIZE];
@@ -53,6 +53,8 @@ int adb_bus_init(void)
     // For Mac99 we must be a laptop with exactly one keyboard and one mouse connected.
     // Resetting and relocating on Mac99 systems have issues requiring PMU reset to resolve.
     //adb_reset();
+    // ...except on emulator we have to, as the devices got moved...
+    if (IsEmulator) adb_reset();
     cur = &g_adb_head;
     memset(&tmp_device, 0, sizeof(adb_dev_t));
     for (address = 1; address < 8 && adb_addresses[reloc] > 0;) {
