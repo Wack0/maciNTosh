@@ -767,9 +767,11 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	printf("Init pxi...\r\n");
 	PxiInit(PciPhysToVirt(Desc->MacIoStart + 0x16000), (Desc->MrFlags & MRF_IN_EMULATOR) != 0);
 	// ADB.
-	int adb_bus_init(bool IsEmulator);
-	printf("Init adb...\r\n");
-	adb_bus_init((Desc->MrFlags & MRF_IN_EMULATOR) != 0);
+	if ((Desc->MrFlags & MRF_NO_ADB) == 0) {
+		int adb_bus_init(bool IsEmulator);
+		printf("Init adb...\r\n");
+		adb_bus_init((Desc->MrFlags & MRF_IN_EMULATOR) != 0);
+	}
 
 #if 0 // usb driver is for now broken :/
 	// USB controllers.
@@ -805,6 +807,7 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	s_RuntimePointers[RUNTIME_DECREMENTER_FREQUENCY].v = Desc->DecrementerFrequency;
 
 	s_RuntimePointers[RUNTIME_HAS_CUDA].v = (Desc->MrFlags & MRF_VIA_IS_CUDA) != 0;
+	s_RuntimePointers[RUNTIME_HAS_NO_ADB].v = (Desc->MrFlags & MRF_NO_ADB) != 0;
 
 	// Initialise the PCI interrupts.
 	ULONG PciIntIndex = 0;

@@ -1441,6 +1441,7 @@ int _start(int argc, char** argv, tfpOpenFirmwareCall of) {
 	}
 	
 	if (OfFindDevice("pmu") == OFNULL && OfFindDevice("via-pmu") == OFNULL) s_MrpFlags |= MRF_VIA_IS_CUDA;
+	if (OfFindDevice("adb-keyboard") == OFNULL) s_MrpFlags |= MRF_NO_ADB;
 	Desc->MrFlags = s_MrpFlags;
 	
 	bool HasPciBridge = false;
