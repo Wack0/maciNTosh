@@ -283,8 +283,14 @@ ohci_init (void *bar)
 	}
 	int interval = READ_OPREG(OHCI_INST (controller), HcFmInterval);
 
+	WRITE_OPREG(OHCI_INST (controller)->opreg->HcInterruptDisable, __cpu_to_le32(~0));
+	WRITE_OPREG(OHCI_INST (controller)->opreg->HcControl, READ_OPREG(OHCI_INST(controller), HcControl) & __cpu_to_le32(~(PeriodicListEnable | IsochronousEnable | ControlListEnable | BulkListEnable)));
+	udelay(2000);
 	WRITE_OPREG(OHCI_INST (controller)->opreg->HcCommandStatus, __cpu_to_le32(HostControllerReset));
-	udelay (10); /* at most 10us for reset to complete. State must be set to Operational within 2ms (5.1.1.4) */
+	WRITE_OPREG(OHCI_INST (controller)->opreg->HcControl, __cpu_to_le32(0));
+	//udelay (10); /* at most 10us for reset to complete. State must be set to Operational within 2ms (5.1.1.4) */
+	// spec says one thing, we should really wait for it.
+	while ((READ_OPREG(OHCI_INST(controller), HcCommandStatus) & __cpu_to_le32(HostControllerReset)) != 0) {}
 	WRITE_OPREG(OHCI_INST (controller)->opreg->HcFmInterval, interval);
 	ofmem_posix_memalign((void **)&(OHCI_INST (controller)->hcca), 256, 256);
 	memset((void*)OHCI_INST (controller)->hcca, 0, 256);

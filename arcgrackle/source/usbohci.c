@@ -277,8 +277,14 @@ ohci_init (void *bar)
 	}
 	int interval = OHCI_INST (controller)->opreg->HcFmInterval;
 
+	OHCI_INST (controller)->opreg->HcInterruptDisable = __cpu_to_le32(~0);
+	OHCI_INST (controller)->opreg->HcControl = READ_OPREG(OHCI_INST(controller), HcControl) & __cpu_to_le32(~(PeriodicListEnable | IsochronousEnable | ControlListEnable | BulkListEnable));
+	udelay(2000);
 	OHCI_INST (controller)->opreg->HcCommandStatus = __cpu_to_le32(HostControllerReset);
-	udelay (10); /* at most 10us for reset to complete. State must be set to Operational within 2ms (5.1.1.4) */
+	OHCI_INST (controller)->opreg->HcControl = __cpu_to_le32(0);
+	//udelay (10); /* at most 10us for reset to complete. State must be set to Operational within 2ms (5.1.1.4) */
+	// spec says one thing, we should really wait for it.
+	while ((READ_OPREG(OHCI_INST(controller), HcCommandStatus) & __cpu_to_le32(HostControllerReset)) != 0) {}
 	OHCI_INST (controller)->opreg->HcFmInterval = interval;
 	ofmem_posix_memalign((void **)&(OHCI_INST (controller)->hcca), 256, 256);
 	memset((void*)OHCI_INST (controller)->hcca, 0, 256);
@@ -341,6 +347,37 @@ ohci_stop (hci_t *controller)
 // TODO: turn off all operation of OHCI
 }
 
+static void DumpHex(const void* data, size_t size) {
+	char ascii[17];
+	size_t i, j;
+	ascii[16] = '\0';
+	for (i = 0; i < size; ++i) {
+		printf("%02X ", ((unsigned char*)data)[i]);
+		if (((unsigned char*)data)[i] >= ' ' && ((unsigned char*)data)[i] <= '~') {
+			ascii[i % 16] = ((unsigned char*)data)[i];
+		}
+		else {
+			ascii[i % 16] = '.';
+		}
+		if ((i + 1) % 8 == 0 || i + 1 == size) {
+			printf(" ");
+			if ((i + 1) % 16 == 0) {
+				printf("|  %s \r\n", ascii);
+			}
+			else if (i + 1 == size) {
+				ascii[(i + 1) % 16] = '\0';
+				if ((i + 1) % 16 <= 8) {
+					printf(" ");
+				}
+				for (j = (i + 1) % 16; j < 16; ++j) {
+					printf("   ");
+				}
+				printf("|  %s \r\n", ascii);
+			}
+		}
+	}
+}
+
 static int
 wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 {
@@ -389,6 +426,8 @@ wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 		__le32_to_cpu(head->tail_pointer),
 		__le32_to_cpu(head->next_ed));
 
+	DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
+
 	/* Clear the done queue. */
 	ohci_process_done_queue(OHCI_INST(dev->controller), 1);
 
@@ -426,14 +465,34 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 {
 	td_t *cur;
 
+	unsigned char* origData = data;
+	int origLen = dalen;
+	// Allocate some uncached memory to use for the data, on a 32-byte (256-bit) alignment
+	// Ensure the length is aligned to 64 bits
+	ULONG alignment = dalen & 7;
+	if (alignment != 0) alignment = 8 - alignment;
+	ULONG dalen_aligned = dalen + alignment;
+	data = aligned_malloc(dalen_aligned, 0x20);
+	if (data == NULL) return -1;
+	// Copy the data to the new uncached buffer if this is a write.
+	if (dir == OUT) {
+		memcpy(data, origData, dalen);
+	}
+	// Also allocate some uncached memory for the device request
+	unsigned char* origDevReq = devreq;
+	alignment = drlen & 7;
+	if (alignment != 0) alignment = 8 - alignment;
+	ULONG drlen_aligned = drlen + alignment;
+	devreq = aligned_malloc(drlen_aligned, 0x20);
+	if (devreq == NULL) return -1;
+	//DumpHex(origDevReq, drlen);
+	memcpy(devreq, origDevReq, drlen);
+
 	// pages are specified as 4K in OHCI, so don't use getpagesize()
 	int first_page = (unsigned long)data / 4096;
 	int last_page = (unsigned long)(data+dalen-1)/4096;
 	if (last_page < first_page) last_page = first_page;
 	int pages = (dalen==0)?0:(last_page - first_page + 1);
-
-	// ensure caches are flushed
-	sync_before_exec(data, dalen);
 
 	/* First TD. */
 	td_t *const first_td;
@@ -525,6 +584,7 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 #ifdef USB_DEBUG_ED
 	dump_ed(head);
 #endif
+	DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
 
 	/* activate schedule */
 	OHCI_INST(dev->controller)->opreg->HcControlHeadED = __cpu_to_le32(virt_to_phys(head));
@@ -542,6 +602,17 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	/* free memory */
 	ohci_free_ed(head);
 
+	// If this is a successful read, copy the data that the OHCI controller wrote to the uncached buffer, to the original pointer that was passed in.
+	//printf("end: dir=%s, fail=%d, len=%x\r\n", s_directions[dir], failure, origLen);
+	if (dir == IN && failure == 0) {
+		//DumpHex(data, origLen);
+		memcpy(origData, data, origLen);
+	}
+
+	// free data
+	aligned_free(data);
+	aligned_free(devreq);
+
 	return failure;
 }
 
@@ -553,6 +624,19 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 	usb_debug("bulk: %x bytes from %08x, finalize: %x, maxpacketsize: %x\n", dalen, data, finalize, ep->maxpacketsize);
 
 	td_t *cur, *next;
+
+	unsigned char* origData = data;
+	int origLen = dalen;
+	// Allocate some uncached memory to use for the data buffer, on a 32-byte (256-bit) alignment
+	// Ensure the length is aligned to 64 bits
+	ULONG alignment = dalen & 7;
+	if (alignment != 0) alignment = 8 - alignment;
+	ULONG dalen_aligned = dalen + alignment;
+	data = aligned_malloc(dalen_aligned, 0x20);
+	// Copy the data to the new buffer if this is a write.
+	if (ep->direction == OUT) {
+		memcpy(data, origData, dalen);
+	}
 
 	// pages are specified as 4K in OHCI, so don't use getpagesize()
 	int first_page = (unsigned long)data / 4096;
@@ -659,6 +743,14 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 		/* try cleanup */
 		clear_stall(ep);
 	}
+
+	// If this is a successful read, copy the data from the uncached buffer back to the passed-in buffer.
+	if (ep->direction == IN && failure == 0) {
+		memcpy(origData, data, origLen);
+	}
+
+	// free data
+	aligned_free(data);
 
 	return failure;
 }
