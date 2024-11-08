@@ -253,7 +253,7 @@ static ARC_STATUS UsbDiskOpen(PCHAR OpenPath, OPEN_MODE OpenMode, PULONG FileId)
 	FileEntry->ReadSectors = UsbDiskRead;
 	FileEntry->WriteSectors = UsbDiskWrite;
 
-	ULONG PartitionSectors = Handle->SectorSize;
+	ULONG PartitionSectors = MSC_INST(Handle->Mount)->numblocks;
 	ULONG PartitionSector = 0;
 	// Set it up for the whole disk so ArcFsPartitionObtain can work.
 	FileEntry->u.DiskContext.SectorStart = PartitionSector;
