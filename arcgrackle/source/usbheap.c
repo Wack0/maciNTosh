@@ -221,7 +221,7 @@ bool UhHeapInit(PVOID Ptr, ULONG Size) {
 	ULONG Ptr32 = (ULONG)Ptr;
 	// convert pointer to uncached
 	Ptr32 -= 0x80000000;
-	Ptr32 += 0x70000000;
+	Ptr32 += 0x90000000;
 	return UhCreate(&s_UsbHeap, (PVOID)Ptr32, Size);
 }
 
