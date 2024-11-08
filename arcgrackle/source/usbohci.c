@@ -265,11 +265,11 @@ ohci_init (void *bar)
 	//OHCI_INST (controller)->opreg->HcInterruptDisable = __cpu_to_le32(~0);
 	//OHCI_INST (controller)->opreg->HcControl = READ_OPREG(OHCI_INST(controller), HcControl) & __cpu_to_le32(~(PeriodicListEnable | IsochronousEnable | ControlListEnable | BulkListEnable));
 	//udelay(2000);
-	OHCI_INST (controller)->opreg->HcCommandStatus = __cpu_to_le32(HostControllerReset);
+	//OHCI_INST (controller)->opreg->HcCommandStatus = __cpu_to_le32(HostControllerReset);
 	//OHCI_INST (controller)->opreg->HcControl = __cpu_to_le32(0);
 	//udelay (10); /* at most 10us for reset to complete. State must be set to Operational within 2ms (5.1.1.4) */
 	// spec says one thing, we should really wait for it.
-	while ((READ_OPREG(OHCI_INST(controller), HcCommandStatus) & __cpu_to_le32(HostControllerReset)) != 0) {}
+	//while ((READ_OPREG(OHCI_INST(controller), HcCommandStatus) & __cpu_to_le32(HostControllerReset)) != 0) {}
 	OHCI_INST (controller)->opreg->HcFmInterval = interval;
 	ofmem_posix_memalign((void **)&(OHCI_INST (controller)->hcca), 256, 256);
 	memset((void*)OHCI_INST (controller)->hcca, 0, 256);
@@ -411,7 +411,7 @@ wait_for_ed(usbdev_t *dev, ed_t *head, int pages)
 		__le32_to_cpu(head->tail_pointer),
 		__le32_to_cpu(head->next_ed));
 
-	DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
+	//DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
 
 	/* Clear the done queue. */
 	ohci_process_done_queue(OHCI_INST(dev->controller), 1);
@@ -569,7 +569,7 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 #ifdef USB_DEBUG_ED
 	dump_ed(head);
 #endif
-	DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
+	//DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
 
 	// Clear the done queue first, to avoid losing any async EDs
 	ohci_process_done_queue(OHCI_INST(dev->controller), 0);
