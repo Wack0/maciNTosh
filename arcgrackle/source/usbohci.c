@@ -586,6 +586,9 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 #endif
 	DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
 
+	// Clear the done queue first, to avoid losing any async EDs
+	ohci_process_done_queue(OHCI_INST(dev->controller), 0);
+
 	/* activate schedule */
 	OHCI_INST(dev->controller)->opreg->HcControlHeadED = __cpu_to_le32(virt_to_phys(head));
 	OHCI_INST(dev->controller)->opreg->HcControl |= __cpu_to_le32(ControlListEnable);
@@ -720,6 +723,9 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 		(__le32_to_cpu(head->config) & ED_EP_MASK) >> ED_EP_SHIFT,
 		__le32_to_cpu(head->config),
 		virt_to_phys(first_td), virt_to_phys(cur));
+
+	// Clear the done queue first, to avoid losing any async EDs
+	ohci_process_done_queue(OHCI_INST(ep->dev->controller), 0);
 
 	/* activate schedule */
 	OHCI_INST(ep->dev->controller)->opreg->HcBulkHeadED = __cpu_to_le32(virt_to_phys(head));
@@ -922,6 +928,33 @@ ohci_destroy_intr_queue(endpoint_t *const ep, void *const q_)
 	ep->toggle = __le32_to_cpu(intrq->ed.head_pointer) & ED_TOGGLE;
 }
 
+static u8* ohci_poll_intr_queue_check_list(intr_queue_t* const intrq) {
+	u8* data = NULL;
+	int i = 0;
+	if (intrq->head == NULL) return NULL;
+	/* Save pointer to processed TD and advance. */
+	intrq_td_t *const cur_td = intrq->head;
+	
+	intrq->head = cur_td->next;
+	cur_td->next = NULL;
+	if (intrq->head == intrq->tail) intrq->head = NULL;
+
+	/* Return data buffer of this TD. */
+	data = cur_td->data;
+
+	/* Requeue this TD (i.e. copy to dummy and requeue as dummy). */
+	intrq_td_t *const dummy_td =
+		INTRQ_TD_FROM_TD(phys_to_virt(__le32_to_cpu(intrq->ed.tail_pointer)));
+	ohci_fill_intrq_td(dummy_td, intrq, data);
+	/* Reset all but intrq pointer (i.e. init as dummy). */
+	memset(cur_td, 0, sizeof(*cur_td));
+	cur_td->intrq = intrq;
+	/* Insert into interrupt queue as dummy. */
+	dummy_td->td.next_td = __le32_to_cpu(virt_to_phys(&cur_td->td));
+	intrq->ed.tail_pointer = __le32_to_cpu(virt_to_phys(&cur_td->td));
+	return data;
+}
+
 /* read one intr-packet from queue, if available. extend the queue for new input.
    return NULL if nothing new available.
    Recommended use: while (data=poll_intr_queue(q)) process(data);
@@ -931,32 +964,14 @@ ohci_poll_intr_queue(void *const q_)
 {
 	intr_queue_t *const intrq = (intr_queue_t *)q_;
 
-	u8 *data = NULL;
+	/* Check the existing queue first, for speed. */
+	u8 *data = ohci_poll_intr_queue_check_list(intrq);
+	if (data != NULL) return data;
 
 	/* Process done queue first, then check if we have work to do. */
 	ohci_process_done_queue(OHCI_INST(intrq->endp->dev->controller), 0);
 
-	if (intrq->head) {
-		/* Save pointer to processed TD and advance. */
-		intrq_td_t *const cur_td = intrq->head;
-		intrq->head = cur_td->next;
-
-		/* Return data buffer of this TD. */
-		data = cur_td->data;
-
-		/* Requeue this TD (i.e. copy to dummy and requeue as dummy). */
-		intrq_td_t *const dummy_td =
-			INTRQ_TD_FROM_TD(phys_to_virt(__le32_to_cpu(intrq->ed.tail_pointer)));
-		ohci_fill_intrq_td(dummy_td, intrq, data);
-		/* Reset all but intrq pointer (i.e. init as dummy). */
-		memset(cur_td, 0, sizeof(*cur_td));
-		cur_td->intrq = intrq;
-		/* Insert into interrupt queue as dummy. */
-		dummy_td->td.next_td = __le32_to_cpu(virt_to_phys(&cur_td->td));
-		intrq->ed.tail_pointer = __le32_to_cpu(virt_to_phys(&cur_td->td));
-	}
-
-	return data;
+	return ohci_poll_intr_queue_check_list(intrq);
 }
 
 static void

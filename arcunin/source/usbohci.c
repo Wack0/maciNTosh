@@ -391,11 +391,13 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 {
 	usb_debug("Waiting for %d pages on dev %08x with head %08x\n", pages, dev, head);
 	mdelay(1);
+#if 0
 	printf("config:%x, head:%x, tail:%x, next:%x\r\n",
 		__le32_to_cpu(head->config),
 		__le32_to_cpu(head->head_pointer),
 		__le32_to_cpu(head->tail_pointer),
 		__le32_to_cpu(head->next_ed));
+#endif
 
 	if ((__le32_to_cpu(head->head_pointer) & ~3) >= 0x10000000) {
 		printf("CONTROLLER CLOBBERED THE ED\r\n");
@@ -416,6 +418,7 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 		if (!(timeout % 1000)) {
 			// no timeout, keep waiting forever if need be
 			//timeout = 1999;
+#if 0
 			printf("intst: %x; ctrl: %x; cmdst: %x; current: %x; head: %x -> %x, tail: %x, condition: %x\r\n",
 				READ_OPREG(OHCI_INST(dev->controller), HcInterruptStatus),
 				READ_OPREG(OHCI_INST(dev->controller), HcControl),
@@ -425,6 +428,7 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 				__le32_to_cpu(((td_t*)phys_to_virt(__le32_to_cpu(head->head_pointer) & ~3))->next_td),
 				__le32_to_cpu(head->tail_pointer),
 				(__le32_to_cpu(((td_t*)phys_to_virt(__le32_to_cpu(head->head_pointer) & ~3))->config) & TD_CC_MASK) >> TD_CC_SHIFT);
+#endif
 		}
 		mdelay(1);
 	}
@@ -432,6 +436,7 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 		usb_debug("Error: ohci: endpoint "
 			"descriptor processing timed out.\n");
 
+#if 0
 	printf("intst: %x; ctrl: %x; cmdst: %x; current: %x; config:%x, head:%x, tail:%x, next:%x\r\n",
 		READ_OPREG(OHCI_INST(dev->controller), HcInterruptStatus),
 		READ_OPREG(OHCI_INST(dev->controller), HcControl),
@@ -441,6 +446,7 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 		__le32_to_cpu(head->head_pointer),
 		__le32_to_cpu(head->tail_pointer),
 		__le32_to_cpu(head->next_ed));
+#endif
 
 	//DumpHex((void*)((ULONG)head & 0xffffff00), 0x100);
 
@@ -469,7 +475,7 @@ wait_for_ed(usbdev_t* dev, ed_t* head, int pages)
 
 	if ((__le32_to_cpu(head->head_pointer) & ~3) != __le32_to_cpu(head->tail_pointer)) {
 		td_t* curr_td = (td_t*)phys_to_virt(__le32_to_cpu(head->head_pointer) & ~3);
-		DumpHex((void*)((ULONG)curr_td & 0xffffff00), 0x100);
+		//DumpHex((void*)((ULONG)curr_td & 0xffffff00), 0x100);
 	}
 
 	/* Clear the done queue. */
@@ -493,18 +499,18 @@ ohci_free_ed (ed_t *const head)
 		/* Advance head pointer. */
 		head->head_pointer = cur_td->next_td;
 		/* Free current TD. */
-		printf("free cur_td %08x %08x\r\n", cur_td, ((void**)cur_td)[-1]);
+		//printf("free cur_td %08x %08x\r\n", cur_td, ((void**)cur_td)[-1]);
 		aligned_free((void *)cur_td);
 	}
 
 	/* Always free the dummy TD */
 	if ((__le32_to_cpu(head->head_pointer) & ~0x3) == __le32_to_cpu(head->tail_pointer)) {
 		void* dummy_td = phys_to_virt(__le32_to_cpu(head->head_pointer) & ~0x3);
-		printf("free dummy_td %08x %08x\r\n", dummy_td, ((void**)dummy_td)[-1]);
+		//printf("free dummy_td %08x %08x\r\n", dummy_td, ((void**)dummy_td)[-1]);
 		aligned_free(phys_to_virt(__le32_to_cpu(head->head_pointer) & ~0x3));
 	}
 	/* and the ED. */
-	printf("free head_ed %08x %08x\r\n", head, ((void**)head)[-1]);
+	//printf("free head_ed %08x %08x\r\n", head, ((void**)head)[-1]);
 	aligned_free((void *)head);
 }
 
@@ -638,16 +644,21 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	head->tail_pointer = __cpu_to_le32(virt_to_phys(final_td));
 	head->head_pointer = __cpu_to_le32(virt_to_phys(first_td));
 
+#if 0
 	printf("ohci_control(): doing transfer with %x(%x). ed:%x, first_td:%x, final_td:%x, next_ed:%x\r\n",
 		__le32_to_cpu(head->config) & ED_FUNC_MASK, __le32_to_cpu(head->config), virt_to_phys(head), __le32_to_cpu(head->head_pointer), __le32_to_cpu(head->tail_pointer), __le32_to_cpu(head->next_ed));
+#endif
 #ifdef USB_DEBUG_ED
 	dump_ed(head);
 #endif
 
 	if (virt_to_phys(first_td) == 0xfc01100) {
-		DumpHex(first_td, 0x100);
+		//DumpHex(first_td, 0x100);
 	}
 
+	// Clear the done queue first, to avoid losing any async EDs
+	ohci_process_done_queue(OHCI_INST(dev->controller), 0);
+	
 	/* activate schedule */
 	WRITE_OPREG(OHCI_INST(dev->controller)->opreg->HcControlHeadED, __cpu_to_le32(virt_to_phys(head)));
 	WRITE_OPREG(OHCI_INST(dev->controller)->opreg->HcControl, READ_OPREG(OHCI_INST(dev->controller), HcControl) | __cpu_to_le32(ControlListEnable));
@@ -665,10 +676,11 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 	ohci_free_ed(head);
 
 	// If this is a successful read, endian swap the data in place and then copy it back to the passed-in buffer.
-	printf("end: dir=%s, fail=%d, len=%x\r\n", s_directions[dir], failure, origLen);
+	//printf("end: dir=%s, fail=%d, len=%x(%x)\r\n", s_directions[dir], failure, origLen, dalen_aligned);
 	if (dir == IN && failure == 0) {
-		DumpHex(data, origLen);
+		//DumpHex(data, origLen);
 		endian_swap64(data, dalen_aligned);
+		//DumpHex(data, origLen);
 		memcpy(origData, data, origLen);
 	}
 
@@ -784,7 +796,10 @@ ohci_bulk (endpoint_t *ep, int dalen, u8 *data, int finalize)
 		(__le32_to_cpu(head->config) & ED_EP_MASK) >> ED_EP_SHIFT,
 		__le32_to_cpu(head->config),
 		virt_to_phys(first_td), virt_to_phys(cur));
-
+	
+	// Clear the done queue first, to avoid losing any async EDs
+	ohci_process_done_queue(OHCI_INST(ep->dev->controller), 0);
+	
 	/* activate schedule */
 	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcBulkHeadED, __cpu_to_le32(virt_to_phys(head)));
 	WRITE_OPREG(OHCI_INST(ep->dev->controller)->opreg->HcControl, READ_OPREG(OHCI_INST(ep->dev->controller), HcControl) | __cpu_to_le32(BulkListEnable));
@@ -888,6 +903,7 @@ ohci_create_intr_queue(endpoint_t *const ep, const int reqsize,
 	for (i = 0; i < reqcount; ++i) {
 		intrq_td_t *const td;
 		ofmem_posix_memalign((void **)&td, sizeof(td->td) * 2, sizeof(*td));
+		//printf("td %d: %lx\r\n", i, virt_to_phys(td));
 		++intrq->remaining_tds;
 		ohci_fill_intrq_td(td, intrq, cur_data);
 		cur_data += reqsize_align;
@@ -915,7 +931,7 @@ ohci_create_intr_queue(endpoint_t *const ep, const int reqsize,
 		(ep->maxpacketsize << ED_MPS_SHIFT));
 	intrq->ed.tail_pointer = __cpu_to_le32(virt_to_phys(last_td));
 	intrq->ed.head_pointer = __cpu_to_le32(virt_to_phys(first_td) | (ep->toggle ? ED_TOGGLE : 0));
-
+	
 #ifdef USB_DEBUG_ED
 	dump_ed(&intrq->ed);
 #endif
@@ -990,6 +1006,32 @@ ohci_destroy_intr_queue(endpoint_t *const ep, void *const q_)
 	ep->toggle = __le32_to_cpu(intrq->ed.head_pointer) & ED_TOGGLE;
 }
 
+static u8 * ohci_poll_intr_queue_check_list(intr_queue_t *const intrq) {
+	if (intrq->head == NULL) return NULL;
+	
+	u8* data = NULL;
+	/* Save pointer to processed TD and advance. */
+	intrq_td_t *const cur_td = intrq->head;
+	intrq->head = cur_td->next;
+
+	/* Return data buffer of this TD. */
+	data = cur_td->data;
+	// Swap endianness in place. reqsize guaranteed to be 64 bits aligned
+	endian_swap64(data, intrq->reqsize);
+
+	/* Requeue this TD (i.e. copy to dummy and requeue as dummy). */
+	intrq_td_t *const dummy_td =
+		INTRQ_TD_FROM_TD(phys_to_virt(__le32_to_cpu(intrq->ed.tail_pointer)));
+	ohci_fill_intrq_td(dummy_td, intrq, data);
+	/* Reset all but intrq pointer (i.e. init as dummy). */
+	memset(cur_td, 0, sizeof(*cur_td));
+	cur_td->intrq = intrq;
+	/* Insert into interrupt queue as dummy. */
+	dummy_td->td.next_td = __le32_to_cpu(virt_to_phys(&cur_td->td));
+	intrq->ed.tail_pointer = __le32_to_cpu(virt_to_phys(&cur_td->td));
+	return data;
+}
+
 /* read one intr-packet from queue, if available. extend the queue for new input.
    return NULL if nothing new available.
    Recommended use: while (data=poll_intr_queue(q)) process(data);
@@ -999,34 +1041,14 @@ ohci_poll_intr_queue(void *const q_)
 {
 	intr_queue_t *const intrq = (intr_queue_t *)q_;
 
-	u8 *data = NULL;
+	/* Check the existing queue first, for speed. */
+	u8 *data = ohci_poll_intr_queue_check_list(intrq);
+	if (data != NULL) return data;
 
 	/* Process done queue first, then check if we have work to do. */
 	ohci_process_done_queue(OHCI_INST(intrq->endp->dev->controller), 0);
 
-	if (intrq->head) {
-		/* Save pointer to processed TD and advance. */
-		intrq_td_t *const cur_td = intrq->head;
-		intrq->head = cur_td->next;
-
-		/* Return data buffer of this TD. */
-		data = cur_td->data;
-		// Swap endianness in place. reqsize guaranteed to be 64 bits aligned
-		endian_swap64(data, intrq->reqsize);
-
-		/* Requeue this TD (i.e. copy to dummy and requeue as dummy). */
-		intrq_td_t *const dummy_td =
-			INTRQ_TD_FROM_TD(phys_to_virt(__le32_to_cpu(intrq->ed.tail_pointer)));
-		ohci_fill_intrq_td(dummy_td, intrq, data);
-		/* Reset all but intrq pointer (i.e. init as dummy). */
-		memset(cur_td, 0, sizeof(*cur_td));
-		cur_td->intrq = intrq;
-		/* Insert into interrupt queue as dummy. */
-		dummy_td->td.next_td = __le32_to_cpu(virt_to_phys(&cur_td->td));
-		intrq->ed.tail_pointer = __le32_to_cpu(virt_to_phys(&cur_td->td));
-	}
-
-	return data;
+	return ohci_poll_intr_queue_check_list(intrq);
 }
 
 static void
@@ -1057,7 +1079,7 @@ ohci_process_done_queue(ohci_t *const ohci, const int spew_debug)
 		switch (__le32_to_cpu(done_td->config) & TD_QUEUETYPE_MASK) {
 		case TD_QUEUETYPE_ASYNC:
 			/* Free processed async TDs. */
-			printf("free done_td %x\r\n", done_td);
+			//printf("free done_td %x\r\n", done_td);
 			aligned_free((void *)done_td);
 			break;
 		case TD_QUEUETYPE_INTR: {
