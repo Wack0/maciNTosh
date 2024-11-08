@@ -133,17 +133,23 @@ ohci_rh_scanport (usbdev_t *dev, int port)
 }
 
 static int
-ohci_rh_report_port_changes (usbdev_t *dev)
+ohci_rh_report_port_changes (usbdev_t *dev, int first)
 {
 	ohci_t *const ohcic = OHCI_INST (dev->controller);
 
 	int i;
 
-	for (i = 0; i < RH_INST(dev)->numports; i++) {
+	for (i = first; i < RH_INST(dev)->numports; i++) {
 		// maybe detach+attach happened between two scans?
-		if (READ_OPREG(ohcic, HcRhPortStatus[i]) & ConnectStatusChange) {
+		ULONG PortStatus = READ_OPREG(ohcic, HcRhPortStatus[i]);
+		if (PortStatus & ConnectStatusChange) {
 			ohcic->opreg->HcRhPortStatus[i] = __cpu_to_le32(ConnectStatusChange);
-			usb_debug("attachment change on port %d\n", i);
+			usb_debug("attachment change on port %d(%x)\n", i, PortStatus);
+			return i;
+		}
+		// attached but unknown device?
+		if (RH_INST(dev)->port[i] == -1 && (PortStatus & CurrentConnectStatus) != 0) {
+			usb_debug("unknown but attached device on port %d\n", i);
 			return i;
 		}
 	}
@@ -175,8 +181,11 @@ ohci_rh_poll (usbdev_t *dev)
 	usb_debug("root hub status change\n");
 
 	/* Scan ports with changed connection status. */
-	while ((port = ohci_rh_report_port_changes (dev)) != -1)
-		ohci_rh_scanport (dev, port);
+	int first = 0;
+	while ((port = ohci_rh_report_port_changes(dev, first)) != -1) {
+		ohci_rh_scanport(dev, port);
+		first = port + 1;
+	}
 }
 
 void
@@ -198,6 +207,7 @@ ohci_rh_init (usbdev_t *dev)
 	usb_debug("%d ports registered\n", RH_INST (dev)->numports);
 
 	for (i = 0; i < RH_INST (dev)->numports; i++) {
+		ohci_rh_disable_port(dev, i);
 		ohci_rh_enable_port (dev, i);
 		RH_INST (dev)->port[i] = -1;
 	}
