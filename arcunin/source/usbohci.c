@@ -39,6 +39,7 @@
 #include "usb.h"
 #include "usbohci_private.h"
 #include "usbohci.h"
+#include "usbheap.h"
 
 #define printk(...)
 
@@ -75,28 +76,12 @@ static u32 virt_to_phys(PVOID _virt) {
 
 static void* aligned_malloc(size_t required_bytes, size_t alignment)
 {
-	PUCHAR p1; // original block
-	void** p2; // aligned block
-	size_t offset = alignment - 1 + sizeof(void*);
-	p1 = (PUCHAR) malloc(required_bytes + offset);
-	if (p1 == NULL) return NULL;
-	memset((PVOID*)((ULONG)p1 - 0x10000000), 0, required_bytes + offset);
-	p2 = (void**)((((size_t)&p1[offset]) & ~(alignment - 1)) - 0x10000000);
-	p2[-1] = p1;
-	//printf("aligned_malloc: %x %x %x %08x %08x\r\n", required_bytes, alignment, required_bytes + offset, p1, p2);
-	// return uncached address
-	return (void*)p2;
+	return UhHeapAllocAligned(required_bytes, alignment);
 }
 
 static void aligned_free(void* p)
 {
-	// cached address is stored before the actual data, so just use it
-	ULONG addr = virt_to_phys(((void**)p)[-1]);
-	if (addr == 0) return;
-	if (addr >= 0x10000000) return;
-	addr += 0x80000000;
-
-	free((PVOID)addr);
+	UhHeapFree(p);
 }
 
 static void ofmem_posix_memalign(void** memptr, size_t alignment, size_t size) {
@@ -651,10 +636,6 @@ ohci_control (usbdev_t *dev, direction_t dir, int drlen, void *devreq, int dalen
 #ifdef USB_DEBUG_ED
 	dump_ed(head);
 #endif
-
-	if (virt_to_phys(first_td) == 0xfc01100) {
-		//DumpHex(first_td, 0x100);
-	}
 
 	// Clear the done queue first, to avoid losing any async EDs
 	ohci_process_done_queue(OHCI_INST(dev->controller), 0);

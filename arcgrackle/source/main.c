@@ -20,6 +20,7 @@
 #include "hwdesc.h"
 
 #include "pxi.h"
+#include "usbheap.h"
 
 ULONG s_MacIoStart;
 
@@ -731,6 +732,18 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 		FwEarlyPanic("[ARC] Could not allocate heap memory");
 	}
 	add_malloc_block(HeapChunk, 0x400000);
+	
+	if (Desc->UsbOhciStart[0] != 0) {
+		// USB needs its own uncached heap.
+		// Carve out some space for it. Use another 4MB.
+		PVOID UncachedHeapChunk = ArcMemAllocTemp(0x400000);
+		if (UncachedHeapChunk == NULL) {
+			FwEarlyPanic("[ARC] Could not allocate uncached heap memory");
+		}
+		if (!UhHeapInit(UncachedHeapChunk, 0x400000)) {
+			FwEarlyPanic("[ARC] Could not initialise uncached heap");
+		}
+	}
 	
 	// If we were passed loaded images then set them up.
 
