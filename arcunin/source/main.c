@@ -784,14 +784,11 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 		adb_bus_init((Desc->MrFlags & MRF_IN_EMULATOR) != 0);
 	}
 
-#if 0 // usb driver is for now broken :/
 	// USB controllers.
 	void ob_usb_ohci_init(PVOID addr);
 	printf("Init usb...\r\n");
 	if (Desc->UsbOhciStart[0] != 0) ob_usb_ohci_init(PciPhysToVirt(Desc->UsbOhciStart[0]));
 	if (Desc->UsbOhciStart[1] != 0) ob_usb_ohci_init(PciPhysToVirt(Desc->UsbOhciStart[1]));
-	//while (1);
-#endif
 
 	// IDE controllers.
 	printf("Init ide...\r\n");
