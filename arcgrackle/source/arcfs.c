@@ -477,7 +477,7 @@ static void RppDecodeRle(PBYTE Rle, ULONG Length, PBYTE Decoded, ULONG LengthOut
 		}
 		i++;
 		Value = Rle[i];
-		if (Value == 0xFF) {
+		if (Value == 0) {
 			Decoded[itOut] = 0xFF;
 			itOut++;
 			continue;
@@ -528,7 +528,11 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 	}
 
 	static const BYTE sc_NtfsBoot[] = {
+#ifdef NTFS_FOR_NT4
+#include "ntfsboot4.inc"
+#else
 #include "ntfsboot.inc"
+#endif
 	};
 
 	static const BYTE sc_NtfsRootDir[] = {
@@ -539,12 +543,78 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 #include "ntfsmft.inc"
 	};
 
-	// Allocate 16KB from heap for MFT decompression, etc
+	// Allocate 64KB from heap for MFT decompression, etc
+	// NT4 allows this to be 16KB, NT 3.5x does not.
+#ifdef NTFS_FOR_NT4
+#define MFT_OFFSET_FROM_1KB_TO_4KB(Offset) Offset
+#else
+#define MFT_OFFSET_FROM_1KB_TO_4KB(Offset) (((Offset) % 0x400) + (((Offset) / 0x400) * 0x1000))
+#endif
 	PBYTE pMft = (PBYTE)malloc(0x4000);
 	if (pMft == NULL) return _ENOMEM;
 
 	// Decompress RLE compressed MFT to allocated buffer
 	RppDecodeRle(sc_NtfsMftRle, sizeof(sc_NtfsMftRle), pMft, 0x4000);
+
+#ifndef NTFS_FOR_NT4
+	// Convert MFT from 1024 byte entries to 4KB entries.
+	enum {
+		FILE_UPDATE_SEQUENCE_OFF_OFFSET = 0x04,
+		FILE_UPDATE_SEQUENCE_COUNT_OFFSET = 0x06,
+		FILE_ATTRIBUTE_OFF_OFFSET = 0x14,
+		FILE_HEADER_REAL_SIZE_OFFSET = 0x18,
+		FILE_HEADER_ALLOCATED_SIZE_OFFSET = 0x1C,
+	};
+	PBYTE pMft4K = (PBYTE)malloc(MFT_OFFSET_FROM_1KB_TO_4KB(0x4000));
+	if (pMft4K == NULL) {
+		free(pMft);
+		return _ENOMEM;
+	}
+	memset(pMft4K, 0, MFT_OFFSET_FROM_1KB_TO_4KB(0x4000));
+	for (
+		int inOff = 0, outOff = 0;
+		inOff < 0x4000;
+		inOff += 0x400, outOff += MFT_OFFSET_FROM_1KB_TO_4KB(0x400)
+		) {
+		memcpy(&pMft4K[outOff], &pMft[inOff], 0x400);
+		U32LE mftSize = { .v = MFT_OFFSET_FROM_1KB_TO_4KB(0x400) };
+		memcpy(&pMft4K[outOff + FILE_HEADER_ALLOCATED_SIZE_OFFSET], (PBYTE)(ULONG)&mftSize, sizeof(mftSize));
+		// Expand the update sequence by 6 entries to 9 to take into account the extra allocated size.
+		// Including 64-bit alignment, this is another 0x10 bytes all zerofilled.
+		U32LE temp32 = { .v = 0 };
+		U16LE temp16 = { .v = 0 };
+		// 1) get offset to attribute data.
+		memcpy((PBYTE)(ULONG)&temp16, &pMft4K[outOff + FILE_ATTRIBUTE_OFF_OFFSET], sizeof(temp16));
+		// 2) copy all data up by 0x10 bytes, zerofill the bytes left behind
+		memmove(&pMft4K[outOff + temp16.v + 0x10], &pMft4K[outOff + temp16.v], 0x400 - temp16.v);
+		memset(&pMft4K[outOff + temp16.v], 0, 0x10);
+		// 3) fix up offsets, lengths and counts
+		temp16.v += 0x10;
+		memcpy(&pMft4K[outOff + FILE_ATTRIBUTE_OFF_OFFSET], (PBYTE)(ULONG)&temp16, sizeof(temp16));
+
+		temp16.v = 9;
+		memcpy(&pMft4K[outOff + FILE_UPDATE_SEQUENCE_COUNT_OFFSET], (PBYTE)(ULONG)&temp16, sizeof(temp16));
+
+		memcpy((PBYTE)(ULONG)&temp32, &pMft4K[outOff + FILE_HEADER_REAL_SIZE_OFFSET], sizeof(temp32));
+		temp32.v += 0x10;
+		memcpy(&pMft4K[outOff + FILE_HEADER_REAL_SIZE_OFFSET], (PBYTE)(ULONG)&temp32, sizeof(temp32));
+		// 4) make sure u16 usn[0] is at end of each sector
+		memcpy((PBYTE)(ULONG)&temp16, &pMft4K[outOff + FILE_UPDATE_SEQUENCE_OFF_OFFSET], sizeof(temp16));
+		if ((ULONG)temp16.v >= temp32.v) {
+			// invalid MFT?!
+			free(pMft4K);
+			free(pMft);
+			return _EBADF;
+		}
+		memcpy((PBYTE)(ULONG)&temp16, &pMft4K[outOff + temp16.v], sizeof(temp16));
+
+		for (ULONG offUsn = 0; offUsn < MFT_OFFSET_FROM_1KB_TO_4KB(0x400); offUsn += 0x200) {
+			memcpy(&pMft4K[outOff + offUsn + 0x1FE], (PBYTE)(ULONG)&temp16, sizeof(temp16));
+		}
+	}
+	free(pMft);
+	pMft = pMft4K;
+#endif
 
 	// Allocate space for empty cluster
 	BYTE EmptyCluster[0x1000] = { 0 };
@@ -564,7 +634,7 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 	};
 
 	// ntfsboot.inc hardcodes a cluster size of 4KB, that is, 
-	int64_t PartitionSizeInSectors = ( ((int64_t)SizeMb) * REPART_MB_SECTORS) - 1;
+	int64_t PartitionSizeInSectors = (((int64_t)SizeMb) * REPART_MB_SECTORS) - 1;
 
 	{
 		LARGE_INTEGER PartitionSizeInSectorsLi = { .QuadPart = PartitionSizeInSectors };
@@ -592,7 +662,7 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 		PUCHAR pNvs = (PUCHAR)(ULONG)&volid;
 		for (ULONG i = 0; i < sizeof(ULONG); i++) {
 			volid.v += *pNvs++;
-			volid.v = (volid.v >> 2) + (volid .v<< 30);
+			volid.v = (volid.v >> 2) + (volid.v << 30);
 		}
 		NewVolumeSerial.HighPart = volid.v;
 		memcpy(&BootSector[NTFSBOOT_OFFSET_VOLUME_SERIAL], (void*)(ULONG)&NewVolumeSerial, sizeof(NewVolumeSerial));
@@ -600,23 +670,71 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 
 	// Calculate the offsets for each file.
 	enum {
-		MFT_MFTMIRR_OFFSET = 0x5A8,
-		MFT_LOGFILE_OFFSET = 0x9A8,
-		MFT_ATTRDEF_OFFSET = 0x11A8,
-		MFT_ROOTDIR_INDEX_OFFSET = 0x15E0,
-		MFT_BITMAP_DISKLEN_OFFSET = 0x18B8,
-		MFT_BITMAP_REALLEN_OFFSET = 0x18C0,
-		MFT_BITMAP_CLUSLEN_OFFSET = 0x1978,
-		MFT_BITMAP_REALSIZE_OFFSET = 0x1988,
-		MFT_BITMAP_FILESIZE_OFFSET = 0x1990,
-		MFT_BITMAP_VALIDLEN_OFFSET = 0x1998,
-		MFT_BITMAP_OFFSET = 0x19A0,
-		MFT_BADCLUS_CLUS64_OFFSET = 0x2198,
-		MFT_BADCLUS_OFFSET = 0x21C8,
-		MFT_UPCASE_OFFSET = 0x29A0,
+
+#ifdef NTFS_FOR_NT4
+		MFT_MFTMIRR_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x5A8),
+		MFT_LOGFILE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x9A8),
+		MFT_ATTRDEF_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x11A8),
+		MFT_ROOTDIR_INDEX_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x15E0),
+		MFT_BITMAP_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x18B8),
+		MFT_BITMAP_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x18C0),
+		MFT_BITMAP_CLUSLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1978),
+		MFT_BITMAP_REALSIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1988),
+		MFT_BITMAP_FILESIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1990),
+		MFT_BITMAP_VALIDLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1998),
+		MFT_BITMAP_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x19A0),
+		MFT_BADCLUS_CLUS64_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x2198),
+		MFT_BADCLUS_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21A8),
+		MFT_BADCLUS_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21B0),
+		MFT_BADCLUS_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21C8),
+		MFT_UPCASE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x29A0),
 
 		ROOTDIR_DISKLEN_OFFSET = 0x160,
 		ROOTDIR_REALLEN_OFFSET = 0x168,
+
+		MFT_BACKUP_CLUSTERS = 1,
+#else
+		MFT_MFT_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0xB8 + 0x10), // 0x10000
+		MFT_MFT_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0xC0 + 0x10), // 0x10000
+		MFT_MFT_CLUSLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x178 + 0x10), // 0x0F
+		MFT_MFT_REALSIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x188 + 0x10), // 0x10000
+		MFT_MFT_FILESIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x190 + 0x10), // 0x10000
+		MFT_MFT_VALIDLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x198 + 0x10), // 0x10000
+		MFT_MFT_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1A0 + 0x10),
+		MFT_MFTMIRR_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x4B8 + 0x10), // 0x4000
+		MFT_MFTMIRR_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x4C0 + 0x10), // 0x4000
+		MFT_MFTMIRR_CLUSLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x580 + 0x10), // 3
+		MFT_MFTMIRR_REALSIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x590 + 0x10), // 0x4000
+		MFT_MFTMIRR_FILESIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x598 + 0x10), // 0x4000
+		MFT_MFTMIRR_VALIDLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x5A0 + 0x10), // 0x4000
+		MFT_MFTMIRR_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x5A8 + 0x10),
+		MFT_LOGFILE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x9A8 + 0x10),
+		MFT_ATTRDEF_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x11A8 + 0x10),
+		MFT_ROOTDIR_INDEX_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x15E0 + 0x10),
+		MFT_BITMAP_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x18B8 + 0x10),
+		MFT_BITMAP_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x18C0 + 0x10),
+		MFT_BITMAP_CLUSLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1978 + 0x10),
+		MFT_BITMAP_REALSIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1988 + 0x10),
+		MFT_BITMAP_FILESIZE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1990 + 0x10),
+		MFT_BITMAP_VALIDLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x1998 + 0x10),
+		MFT_BITMAP_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x19A0 + 0x10),
+		MFT_BADCLUS_CLUS64_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x2198 + 0x10),
+		MFT_BADCLUS_DISKLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21A8 + 0x10),
+		MFT_BADCLUS_REALLEN_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21B0 + 0x10),
+		MFT_BADCLUS_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x21C8 + 0x10),
+		MFT_UPCASE_OFFSET = MFT_OFFSET_FROM_1KB_TO_4KB(0x29A0 + 0x10),
+
+		ROOTDIR_DISKLEN_OFFSET = 0x160,
+		ROOTDIR_REALLEN_OFFSET = 0x168,
+
+		ROOTDIR_MFT_DISKLEN_OFFSET = 0x288,
+		ROOTDIR_MFT_REALLEN_OFFSET = 0x290,
+
+		ROOTDIR_MFTMIRR_DISKLEN_OFFSET = 0x288,
+		ROOTDIR_MFTMIRR_REALLEN_OFFSET = 0x290,
+
+		MFT_BACKUP_CLUSTERS = 4,
+#endif
 	};
 
 	ARC_STATUS Status = _ESUCCESS;
@@ -630,6 +748,10 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 	LARGE_INTEGER BitmapRealSize = { .QuadPart = BitmapCountClusters };
 	BitmapRealSize.QuadPart *= 0x1000;
 	LARGE_INTEGER BitmapDiskSize = { .QuadPart = BitmapCountBytes };
+#ifndef NTFS_FOR_NT4
+	LARGE_INTEGER MftSize = { .QuadPart = MFT_OFFSET_FROM_1KB_TO_4KB(0x4000) };
+	LARGE_INTEGER MftMirrSize = { .QuadPart = MFT_OFFSET_FROM_1KB_TO_4KB(0x1000) };
+#endif
 	do {
 		// MftMirr is at BackupMftCluster.
 		if (!RppMftWriteCluster24(pMft, MFT_MFTMIRR_OFFSET, BackupMftCluster)) {
@@ -638,7 +760,7 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 			break;
 		}
 
-		int64_t CurrentCluster = BackupMftCluster + 1;
+		int64_t CurrentCluster = BackupMftCluster + MFT_BACKUP_CLUSTERS;
 
 		// LogFile is after BackupMft.
 		if (!RppMftWriteCluster24(pMft, MFT_LOGFILE_OFFSET, CurrentCluster)) {
@@ -693,6 +815,31 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 		// BUGBUG: this is u64, but cluster count fits in a byte, that was just checked.
 		pMft[MFT_BITMAP_CLUSLEN_OFFSET] = (BYTE)BitmapCountClusters - 1;
 
+#ifndef NTFS_FOR_NT4
+		// Need to fix up the lengths of primary and backup MFTs.
+		memcpy(&pMft[MFT_MFT_DISKLEN_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&pMft[MFT_MFT_REALLEN_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&pMft[MFT_MFT_REALSIZE_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&pMft[MFT_MFT_FILESIZE_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&pMft[MFT_MFT_VALIDLEN_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&RootDir[ROOTDIR_DISKLEN_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+		memcpy(&RootDir[ROOTDIR_REALLEN_OFFSET], (PVOID)(ULONG)&MftSize, sizeof(MftSize));
+
+		pMft[MFT_MFT_OFFSET + 1] = 0x10;
+		pMft[MFT_MFT_CLUSLEN_OFFSET] = 0x10 - 1;
+
+		memcpy(&pMft[MFT_MFTMIRR_DISKLEN_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&pMft[MFT_MFTMIRR_REALLEN_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&pMft[MFT_MFTMIRR_REALSIZE_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&pMft[MFT_MFTMIRR_FILESIZE_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&pMft[MFT_MFTMIRR_VALIDLEN_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&RootDir[ROOTDIR_DISKLEN_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+		memcpy(&RootDir[ROOTDIR_REALLEN_OFFSET], (PVOID)(ULONG)&MftMirrSize, sizeof(MftMirrSize));
+
+		pMft[MFT_MFTMIRR_OFFSET + 1] = 4;
+		pMft[MFT_MFTMIRR_CLUSLEN_OFFSET] = 4 - 1;
+#endif
+
 		// Bad clusters which specifies the whole disk.
 		if (!RppMftWriteBadCluster24(pMft, MFT_BADCLUS_OFFSET, PartitionSizeInClusters + 1)) {
 			//printf("bad badclus: %08x\r\n", (ULONG)CurrentCluster);
@@ -704,6 +851,11 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 		{
 			LARGE_INTEGER PartSizeClus = { .QuadPart = PartitionSizeInClusters };
 			memcpy(&pMft[MFT_BADCLUS_CLUS64_OFFSET], (PVOID)(ULONG)&PartSizeClus, sizeof(PartSizeClus));
+			// Size on disk + size of file needs to be equal to the partition size in bytes
+			// This implies a partition size limit of 1EB, good luck with putting that in an MBR though
+			PartSizeClus.QuadPart *= 0x1000;
+			memcpy(&pMft[MFT_BADCLUS_DISKLEN_OFFSET], (PVOID)(ULONG)&PartSizeClus, sizeof(PartSizeClus));
+			memcpy(&pMft[MFT_BADCLUS_REALLEN_OFFSET], (PVOID)(ULONG)&PartSizeClus, sizeof(PartSizeClus));
 		}
 
 		// Uppercase table is after bitmap.
@@ -753,10 +905,10 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 		Status = Vectors->Write(DeviceId, EmptyCluster, sizeof(EmptyCluster), &Count);
 		if (ARC_SUCCESS(Status) && Count != sizeof(EmptyCluster)) Status = _EIO;
 		if (ARC_FAIL(Status)) break;
-		
+
 		// Write the primary MFT.
-		Status = Vectors->Write(DeviceId, pMft, 0x4000, &Count);
-		if (ARC_SUCCESS(Status) && Count != 0x4000) Status = _EIO;
+		Status = Vectors->Write(DeviceId, pMft, MFT_OFFSET_FROM_1KB_TO_4KB(0x4000), &Count);
+		if (ARC_SUCCESS(Status) && Count != MFT_OFFSET_FROM_1KB_TO_4KB(0x4000)) Status = _EIO;
 		if (ARC_FAIL(Status)) break;
 
 		// Seek to the backup MFT location.
@@ -764,9 +916,9 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 		Status = Vectors->Seek(DeviceId, &SectorOffset, SeekAbsolute);
 		if (ARC_FAIL(Status)) break;
 
-		// Write the backup MFT, which is only the first cluster of the primary MFT.
-		Status = Vectors->Write(DeviceId, pMft, 0x1000, &Count);
-		if (ARC_SUCCESS(Status) && Count != 0x1000) Status = _EIO;
+		// Write the backup MFT, which is only the first 4 elements of the primary MFT.
+		Status = Vectors->Write(DeviceId, pMft, MFT_OFFSET_FROM_1KB_TO_4KB(0x1000), &Count);
+		if (ARC_SUCCESS(Status) && Count != MFT_OFFSET_FROM_1KB_TO_4KB(0x1000)) Status = _EIO;
 		if (ARC_FAIL(Status)) break;
 
 		// Next up is logfile which is 4MB FF-filled
@@ -793,8 +945,13 @@ static ARC_STATUS RpFormatNtfs(ULONG DeviceId, PDEVICE_VECTORS Vectors, ULONG St
 
 		{
 			// First, write the initial bitmap cluster. This represents 32768 clusters.
-			// Cluster 0 "unused" (really bootdata, nothing will write to that), then next 7 clusters are used by the MFT so set that.
+			// Cluster 0 "unused" (really bootdata, nothing will write to that), then next 7 (for NT4) or 28 (for NT3.x) clusters are used by the MFT so set that.
+#ifdef NTFS_FOR_NT4
 			EmptyCluster[0] = 0xF7;
+#else
+			EmptyCluster[0] = EmptyCluster[1] = 0xFF;
+			EmptyCluster[2] = 0x07;
+#endif
 			Status = Vectors->Write(DeviceId, EmptyCluster, sizeof(EmptyCluster), &Count);
 			if (ARC_SUCCESS(Status) && Count != sizeof(EmptyCluster)) Status = _EIO;
 			if (ARC_FAIL(Status)) break;
@@ -1006,16 +1163,30 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	// Partition 4 - OS9 driver partition 2 (wiki) (64KB)
 	// Partition 5 - OS9 patch partition (256KB)
 	// Partition 6 - Apple_Boot HFS boot partition (256KB)
-	// Partition 7 - dummy partition, this covers up to 1MB + 32MB ARC system partition + "NtPartMb" MB NT OS partition
-	// Partition 8+ - user-specified Mac partitions.
+	// Partition 7 - dummy partition, this covers up to 1MB + "NtPartMb" MB NT OS partition
+	// Partition 8 - exactly covers the ARC system partition
+	// Partition 9+ - user-specified Mac partitions.
 	// MBR partition table:
 	// Partition 1 - type 0x41, start 32KB, up to 1MB
-	// Partition 2 - FAT16, OS partition, start 33MB, size "NtPartMb"MB
+	// Partition 2 - FAT16, OS partition, start 1MB, size "NtPartMb"MB
 	// Partition 3 - FAT16, ARC system partition, start after OS partition, size 32MB
 	// Partition 4 - type 0xEE, active byte 0x7F, covers remainder of disk or 8GB, whichever comes first
 	// The first partition won't be touched by NT, the last partition is defined in such a way that modern OSes (linux, BSDs...) will ignore the MBR entirely
 	// We have to have the OS partition before the ARC system partition, otherwise ARC system partition becomes C: and pagefile gets put there.
 
+	// Document some interesting behaviour of classic Mac OS's driver loading algorithm here:
+	// All of this behaviour exists in the earliest PowerPC Old World toolbox ROM and the New World Mac OS 9.2.2 kernel.
+	// This is specifically for the SCSI Manager 4.3, the ATA Manager (for IDE drives) does not check for AIX partition table, and always checks the checksum.
+	// - If sector 0 starts with 0xc9c2d4c1 (that is, AIX partition table), then u32 at offset 0x30 (boot_prg_start) is the (512 byte) sector offset to the DDT.
+	//   In this scenario, sector offsets in the DDT are based from the DDT, but sector offsets in the partition table entries following are from the disk start.
+	//   It appears this was intended for an unreleased port of AIX to NuBus Macs (AIX's bootloader would be present as a driver here, this would be the earliest time code from disk could run during nubus boot)
+	// - If partition 1 signature is not APM_VALID_SIGNATURE, always try to load the driver as specified in DDT as old style driver.
+	//   Otherwise, driver is only loaded if at least one HFS partition is present as well, judged by first 9 bytes of partition type being equal to "Apple_HFS"
+	// - Driver checksum is only checked if the driver partition name starts with "Maci".
+	//   This appears to be a bug, the older SCSI Manager (in m68k ASM) skips the partition entirely if the name does not start with "Maci".
+	// - The checksum is over the size in bytes specified in the partition table sector (LengthBoot); but the actual read size is from the DDT.
+	// - The BootCodeArchitecture of the driver partition table entry is always unused. SCSI Manager drivers are always m68k.
+	
 	if (DataWritten == NULL || SourceDevice == NULL) return _EINVAL;
 	*DataWritten = false;
 	// If number of APM partitions is over the maximum allowed, do nothing
@@ -1331,7 +1502,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		Mbr.ApmDdt.Drivers[0].SectorStart = REPART_APM_PART3_START;
 		Mbr.ApmDdt.Drivers[0].SectorCount = lenDrvptDR / REPART_SECTOR_SIZE;
 		if ((lenDrvptDR & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[0].SectorCount++;
-		//Mbr.ApmDdt.Drivers[0].OsType = 0x0701;
+		Mbr.ApmDdt.Drivers[0].OsType = 0x0701;
 
 		// Partition 4: Apple_Driver_ATA wiki
 		ApmpInit(&Apm[3], ApmPartitionsCount, REPART_APM_PART4_START, REPART_APM_PART4_SIZE, true);
@@ -1353,13 +1524,28 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 			break;
 		}
 
+		// Try to patch the wiki driver in memory.
+		// Pattern: 0x01FE ; cmpi
+		// This matches move.b 0x1FE(x),y ; cmpi.w #$55,y
+		// We patch the 0x1FE (offset of MBR signature) to zero
+		// This allows OS9 to see the APM side of the disk even if MBR is visible
+		ULONG drvWikiPatchOffset = lenDrvwiki;
+		{
+			static UCHAR sc_Pattern[] = { 0x01, 0xFE, 0x0C };
+			PUCHAR pWikiPatch = mem_mem(Buffer, sc_Pattern, lenDrvwiki, sizeof(sc_Pattern));
+			if (pWikiPatch != NULL) {
+				drvWikiPatchOffset = (ULONG)pWikiPatch - (ULONG)Buffer;
+				pWikiPatch[0] = pWikiPatch[1] = 0;
+			}
+		}
+
 		// Fill in the checksum
 		Apm[3].BootCodeChecksum = ApmpDriverChecksum(Buffer, lenDrvwiki);
 		// Fill in the DDT driver info for this driver. sector start = partition start, sector count = LengthBoot in sectors
 		Mbr.ApmDdt.Drivers[1].SectorStart = REPART_APM_PART4_START;
 		Mbr.ApmDdt.Drivers[1].SectorCount = lenDrvwiki / REPART_SECTOR_SIZE;
 		if ((lenDrvwiki & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[1].SectorCount++;
-		//Mbr.ApmDdt.Drivers[1].OsType = 0xF8FF;
+		Mbr.ApmDdt.Drivers[1].OsType = 0xF8FF;
 
 		// Partition 5: apple patch partition
 		ApmpInit(&Apm[4], ApmPartitionsCount, REPART_APM_PART5_START, REPART_APM_PART5_SIZE, false);
@@ -1370,18 +1556,26 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		// Partition 6: boot partition
 		ApmpInit(&Apm[5], ApmPartitionsCount, REPART_APM_PART6_START, REPART_APM_PART6_SIZE, false);
 		strncpy(Apm[5].Name, "Windows NT", sizeof(Apm[5].Name));
-		strncpy(Apm[5].Type, "Apple_Boot", sizeof(Apm[5].Type));
+		strncpy(Apm[5].Type, "Apple_HFS", sizeof(Apm[5].Type));
+		Apm[5].Status = 0x40000033;
 
 		// Partition 7: dummy partition for covering up to the end of the OS partition in MBR for NT
 		// Calculate the length for this
-		ULONG Part7SectorSize = (ArcSystemPartitionSectorOffset + REPART_MBR_PART3_SIZE - REPART_APM_PART7_START);
+		ULONG Part7SectorSize = (ArcSystemPartitionSectorOffset - REPART_APM_PART7_START);
 		ApmpInit(&Apm[6], ApmPartitionsCount, REPART_APM_PART7_START, Part7SectorSize, false);
 		strncpy(Apm[6].Name, "Extra", sizeof(Apm[6].Name));
 		strncpy(Apm[6].Type, "CD_partition_scheme", sizeof(Apm[6].Type));
 		Apm[6].Status = 0;
 
-		// Partition 8 and above: the Mac partitions
-		ULONG MacPartStart = REPART_APM_PART7_START + Part7SectorSize;
+		// Partition 8: covers the ARC system partition exactly
+		ULONG SysPartStart = REPART_APM_PART7_START + Part7SectorSize;
+		ApmpInit(&Apm[7], ApmPartitionsCount, SysPartStart, REPART_MBR_PART3_SIZE, false);
+		strncpy(Apm[7].Name, "ARC System Partition", sizeof(Apm[7].Name));
+		strncpy(Apm[7].Type, "DOS_FAT_16", sizeof(Apm[7].Type));
+		Apm[7].Status = 0x40000033;
+
+		// Partition 9 and above: the Mac partitions
+		ULONG MacPartStart = SysPartStart + REPART_MBR_PART3_SIZE;
 		for (ULONG i = 0; i < CountMacParts; i++) {
 			ULONG MacPartSectors = MacPartsMb[i] * REPART_MB_SECTORS;
 
@@ -1394,17 +1588,17 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 				}
 			}
 
-			ApmpInit(&Apm[7 + i], ApmPartitionsCount, MacPartStart, MacPartSectors, false);
-			strncpy(Apm[7 + i].Type, "Apple_HFS", sizeof(Apm[7 + i].Type)); // this type will allow OSX Disk Utility to format the Mac partitions
+			ApmpInit(&Apm[8 + i], ApmPartitionsCount, MacPartStart, MacPartSectors, false);
+			strncpy(Apm[8 + i].Type, "Apple_HFS", sizeof(Apm[8 + i].Type)); // this type will allow OSX Disk Utility to format the Mac partitions
 			static const char s_MacPartName[] = "Mac Partition ";
-			strncpy(Apm[7 + i].Name, s_MacPartName, sizeof(Apm[7 + i].Name));
+			strncpy(Apm[8 + i].Name, s_MacPartName, sizeof(Apm[8 + i].Name));
 			ULONG CountIndex = sizeof(s_MacPartName) - 1;
 			ULONG IndexTens = (i / 10);
-			Apm[7 + i].Name[CountIndex + 0] = IndexTens + (IndexTens >= 10 ? ('A' - 10) : '0');
-			Apm[7 + i].Name[CountIndex + 1] = (i % 10) + '0';
-			Apm[7 + i].Name[CountIndex + 2] = 0;
+			Apm[8 + i].Name[CountIndex + 0] = IndexTens + (IndexTens >= 10 ? ('A' - 10) : '0');
+			Apm[8 + i].Name[CountIndex + 1] = (i % 10) + '0';
+			Apm[8 + i].Name[CountIndex + 2] = 0;
 
-			Apm[7 + i].Status = 0x40000033;
+			Apm[8 + i].Status = 0x40000033;
 
 			// calculate the start of the next partition
 			MacPartStart += MacPartSectors;
@@ -1413,10 +1607,10 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		// Final partition: free space
 		ULONG EmptySpace = (DiskSizeMb * REPART_MB_SECTORS) - MacPartStart;
 		if (EmptySpace > 0) {
-			ApmpInit(&Apm[7 + CountMacParts], ApmPartitionsCount, MacPartStart, EmptySpace, false);
-			strncpy(Apm[7 + CountMacParts].Name, "Extra", sizeof(Apm[7 + CountMacParts].Name));
-			strncpy(Apm[7 + CountMacParts].Type, "Apple_Free", sizeof(Apm[7 + CountMacParts].Type));
-			Apm[7 + CountMacParts].Status = 0;
+			ApmpInit(&Apm[8 + CountMacParts], ApmPartitionsCount, MacPartStart, EmptySpace, false);
+			strncpy(Apm[8 + CountMacParts].Name, "Extra", sizeof(Apm[8 + CountMacParts].Name));
+			strncpy(Apm[8 + CountMacParts].Type, "Apple_Free", sizeof(Apm[8 + CountMacParts].Type));
+			Apm[8 + CountMacParts].Status = 0;
 		}
 
 		// All partition tables have now been computed in memory.
@@ -1480,12 +1674,18 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		printf("Writing Apple_Driver_ATA.wiki...\r\n");
 
 		// Read the file again and ensure checksum matches
+		// Make the patch again if the pattern was found earlier
 		Status = Api->ReadRoutine(hDrvwiki, Buffer, lenDrvwiki, &CountLe);
+		if (drvWikiPatchOffset != lenDrvwiki && ARC_SUCCESS(Status) && CountLe.v == lenDrvwiki) {
+			PBYTE pWikiPatch = (PBYTE)Buffer + drvWikiPatchOffset;
+			pWikiPatch[0] = pWikiPatch[1] = 0;
+		}
 		if (ARC_FAIL(Status) || CountLe.v != lenDrvwiki || Apm[3].BootCodeChecksum != ApmpDriverChecksum(Buffer, lenDrvwiki)) {
 			printf("Could not read Apple_Driver_ATA.wiki\r\n");
 			if (ARC_SUCCESS(Status)) Status = _EBADF;
 			break;
 		}
+
 
 		// Seek to partition 4
 		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_APM_PART4_START * REPART_SECTOR_SIZE);
@@ -1506,11 +1706,14 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
 		if (ARC_SUCCESS(Status)) {
 			// Write to disk
+#if 0 // this is just a header pointing to code that isn't being written to disk.
 			static const UCHAR sc_ApplePatches[] = {
 #include "applepatch.inc"
 			};
+#endif
 			memset(&Mbr, 0, sizeof(Mbr));
-			memcpy(&Mbr, sc_ApplePatches, sizeof(sc_ApplePatches));
+			// zeroing out the first sector of patch partition allows TBXI to boot!
+			//memcpy(&Mbr, sc_ApplePatches, sizeof(sc_ApplePatches));
 
 			Count = 0;
 			Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
@@ -1719,7 +1922,7 @@ ARC_STATUS ArcFsUpdateBootPartition(ULONG DeviceId, const char* SourceDevice) {
 	if (ApmEntry.ApmTableSectors > 63) return _EBADF;
 	if (ApmEntry.SectorStart != REPART_APM_PART6_START) return _EBADF;
 	if (ApmEntry.SectorCount != REPART_APM_PART6_SIZE) return _EBADF;
-	if (strcmp(ApmEntry.Type, "Apple_Boot") != 0) return _EBADF;
+	if (strcmp(ApmEntry.Type, "Apple_HFS") != 0 && strcmp(ApmEntry.Type, "Apple_Boot") != 0) return _EBADF;
 
 	// APM partition entry looks ok
 	// craft new image in memory:
