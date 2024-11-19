@@ -8,6 +8,7 @@
 #include "arc.h"
 #include "arctime.h"
 #include "timer.h"
+#include "pxi.h"
 
 enum {
 	RTC_TO_UNIX_DIFF = 2082844800,
