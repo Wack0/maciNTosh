@@ -201,13 +201,13 @@ static void ArcFwPartitionerSelected(ULONG Hd) {
 					switch (Character) {
 					case 'A': // Up arrow
 					case 'D': // Left arrow
-						if (DefaultChoice == 0) DefaultChoice = SETUP_MENU_CHOICES_COUNT;
+						if (DefaultChoice == 0) DefaultChoice = PARTITION_MENU_CHOICES_COUNT;
 						DefaultChoice--;
 						break;
 					case 'B': // Down arrow
 					case 'C': // Right arrow
 						DefaultChoice++;
-						if (DefaultChoice >= SETUP_MENU_CHOICES_COUNT) DefaultChoice = 0;
+						if (DefaultChoice >= PARTITION_MENU_CHOICES_COUNT) DefaultChoice = 0;
 						break;
 					case 'H': // Home
 						DefaultChoice = 0;
