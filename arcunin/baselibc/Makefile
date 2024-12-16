@@ -1,6 +1,9 @@
+ifneq ($(strip $(DEVKITPPC)),)
+PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
+endif
 
-ifeq ($(strip $(DEVKITPPC)),)
-$(error "Please set DEVKITPPC in your environment. export DEVKITPPC=<path to>devkitPPC")
+ifeq ($(strip $(PREFIX)),)
+$(error "Set DEVKITPPC or PREFIX in your environment.")
 endif
 
 # You can override the CFLAGS and C compiler externally,
@@ -21,8 +24,8 @@ ifeq ($(PLATFORM),mipsel)
   CFLAGS += -G0 -mno-gpopt -march=r4000 -Os -mel -mgp32 -mfp32 -mabi=32
 endif
 ifeq ($(PLATFORM),ppc)
-  CC	  = $(DEVKITPPC)/bin/powerpc-eabi-gcc
-  AR      = $(DEVKITPPC)/bin/powerpc-eabi-gcc-ar
+  CC	  = $(PREFIX)gcc
+  AR      = $(PREFIX)ar
   CFLAGS += -mcpu=750 -m32 -mhard-float -mno-eabi -mno-sdata -mlittle
 endif
 
