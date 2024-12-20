@@ -208,11 +208,11 @@ static void usage(char* arg0) {
 		fseek(fFile, 0, SEEK_END); \
 		\
 		__auto_type lenFile = ftello(fFile); \
-		if (varLen > 0xFFFFFFFF) { \
+		if (lenFile > 0xFFFFFFFF) { \
 			printf("%s cannot be over 4GB\n", argv[i]); \
 			return -2; \
 		} \
-		if ((varLen % APM_SECTOR_SIZE_CD) != 0) { \
+		if ((lenFile % APM_SECTOR_SIZE_CD) != 0) { \
 			printf("%s size must be a multiple of 2048 bytes\n", argv[i]); \
 			return -2; \
 		} \
@@ -242,11 +242,11 @@ static void usage(char* arg0) {
 		fseek(fFile, 0, SEEK_END); \
 		\
 		__auto_type lenFile = ftello(fFile); \
-		if (varLen > len) { \
+		if (lenFile > len) { \
 			printf("%s cannot be over %d bytes\n", argv[i], len); \
 			return -2; \
 		} \
-		if ((varLen % APM_SECTOR_SIZE_CD) != 0) { \
+		if ((len % APM_SECTOR_SIZE_CD) != 0) { \
 			printf("%s size must be a multiple of 2048 bytes\n", argv[i]); \
 			return -2; \
 		} \
@@ -263,6 +263,10 @@ static void usage(char* arg0) {
 			return -2; \
 		} \
 		fclose(fFile); \
+		/* SCSI drivers must have a 512 byte-aligned length */ \
+		if ((varLen % APM_SECTOR_SIZE) != 0) { \
+			varLen += APM_SECTOR_SIZE - (varLen % APM_SECTOR_SIZE); \
+		} \
 	} while (0)
 
 #define READ_FILE_MAXLEN(var, i, length) READ_FILE_MAXLEN_IMPL(p##var, len##var, i, length)
@@ -315,6 +319,7 @@ int main(int argc, char** argv) {
 	// this works around someone passing whole driver partition images
 	if (len43CDrv > LEN_DRV2_CAP) len43CDrv = LEN_DRV2_CAP;
 	if (lenATAATPI > LEN_DRV2_CAP) lenATAATPI = LEN_DRV2_CAP;
+	
 	
 	// how big is the ISO(bytes)?
 	fseek(fIso, 0, SEEK_END);
