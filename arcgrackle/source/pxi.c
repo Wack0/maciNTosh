@@ -415,7 +415,7 @@ void PxiPowerOffSystem(bool Reset) {
 	// - No way to shut down system outside of pmu poweroff
 	// - NT (and ARC) doesn't actually power off system, only reboot
 	// - Some systems won't come up after reset?
-	if (Reset && s_IsCuda) {
+	if (Reset && s_PxiIsCuda) {
 		if (s_PxiIsCuda) {
 			UCHAR Cmd = CUDA_RESET_PPC;
 			UCHAR Out[16];
