@@ -300,6 +300,14 @@ void PxiInit(PVOID MmioBase, bool IsCuda) {
 		MmioWrite8(&s_PxiRegs->DirB, (s_PxiRegs->DirB & ~PXI_PORT_REQ_CUDA) | PXI_PORT_ACK_CUDA | PXI_PORT_TIP_CUDA);
 #if 1
 		MmioWrite8(&s_PxiRegs->BufB, s_PxiRegs->BufB | PXI_PORT_RX_CUDA);
+		// Ensure PXI interrupts are all acked and disabled, to prevent an interrupt storm during HAL init.
+		// ack
+		MmioWrite8(&s_PxiRegs->IFR, 0xFF);
+		// disable
+		MmioWrite8(&s_PxiRegs->IER, ~PXI_IE_SET);
+		MmioRead8(&s_PxiRegs->IER);
+		// clear
+		MmioRead8(&s_PxiRegs->SR);
 #else // following is what openbsd driver does:
 		PxipSetAcrIn();
 		MmioWrite8(&s_PxiRegs->BufB, s_PxiRegs->BufB | PXI_PORT_RX_CUDA);
@@ -321,6 +329,9 @@ void PxiInit(PVOID MmioBase, bool IsCuda) {
 		UCHAR Out[3];
 		PxiSendSyncRequest(CUDA_TYPE_CMD, Cmd, sizeof(Cmd), false, Out, sizeof(Out), false);
 
+		// turn off one second timer
+		Cmd[0] = 0x1B;
+		PxiSendSyncRequest(CUDA_TYPE_CMD, Cmd, sizeof(Cmd), false, Out, sizeof(Out), false);
 		return;
 	}
 
@@ -400,7 +411,11 @@ void PxiRtcWrite(ULONG Value) {
 
 void PxiPowerOffSystem(bool Reset) {
 	// Power off or reset system.
-	if (Reset) {
+	// For PMU systems, always power off, because:
+	// - No way to shut down system outside of pmu poweroff
+	// - NT (and ARC) doesn't actually power off system, only reboot
+	// - Some systems won't come up after reset?
+	if (Reset && s_IsCuda) {
 		if (s_PxiIsCuda) {
 			UCHAR Cmd = CUDA_RESET_PPC;
 			UCHAR Out[16];

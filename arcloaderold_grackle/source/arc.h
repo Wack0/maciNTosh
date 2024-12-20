@@ -167,18 +167,18 @@ typedef struct ARC_LE _CONFIGURATION_COMPONENT {
     size_t Identifier;
 } CONFIGURATION_COMPONENT, * PCONFIGURATION_COMPONENT;
 
-typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR {
+typedef struct ARC_LE ARC_ALIGNED(4) _CM_PARTIAL_RESOURCE_DESCRIPTOR {
     UCHAR Type;
     UCHAR ShareDisposition;
     USHORT Flags;
-    union ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+    union ARC_LE {
 
         //
         // Range of port numbers, inclusive. These are physical, bus
         // relative.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             PHYSICAL_ADDRESS Start;
             ULONG Length;
         } Port;
@@ -187,7 +187,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // IRQL and vector.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             ULONG Level;
             ULONG Vector;
             ULONG Affinity;
@@ -198,7 +198,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // relative.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             PHYSICAL_ADDRESS Start;    // 64 bit physical addresses.
             ULONG Length;
         } Memory;
@@ -207,7 +207,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // Physical DMA channel.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             ULONG Channel;
             ULONG Port;
             ULONG Reserved1;
@@ -217,7 +217,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // Vendor string.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             CHAR Vendor[12];
         } Vendor;
 
@@ -225,7 +225,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // Product name string.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             CHAR ProductName[12];
         } ProductName;
 
@@ -233,7 +233,7 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // Serial Number string.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             CHAR SerialNumber[12];
         } SerialNumber;
 
@@ -244,14 +244,13 @@ typedef struct ARC_LE ARC_ALIGNED(4) ARC_PACKED _CM_PARTIAL_RESOURCE_DESCRIPTOR 
         // the structure.
         //
 
-        struct ARC_LE ARC_ALIGNED(4) ARC_PACKED {
+        struct ARC_LE {
             ULONG DataSize;
             ULONG Reserved1;
             ULONG Reserved2;
         } DeviceSpecificData;
     };
 } CM_PARTIAL_RESOURCE_DESCRIPTOR, * PCM_PARTIAL_RESOURCE_DESCRIPTOR;
-_Static_assert(__builtin_offsetof(CM_PARTIAL_RESOURCE_DESCRIPTOR, Memory.Start.LowPart) == 4);
 
 typedef struct ARC_LE _CM_PARTIAL_RESOURCE_LIST_HEADER {
     USHORT Version;
@@ -948,6 +947,8 @@ typedef struct ARC_LE _SYSTEM_PARAMETER_BLOCK_LE {
 #define ARC_VENDOR_VECTORS() ((PVENDOR_VECTOR_TABLE)(ARC_SYSTEM_TABLE_LE()->VendorVector))
 
 PCHAR ArcGetErrorString(ARC_STATUS Status);
+void DWC_Printf(const char* fmt, ...);
+#define DOLPHIN_PRINTF(...) DWC_Printf(__VA_ARGS__)
 
 // Define screen colours.
 typedef enum _ARC_SCREEN_COLOUR {
@@ -964,48 +965,43 @@ typedef enum _ARC_SCREEN_COLOUR {
 
 // Define print macros.
 #define ArcClearScreen() \
-    printf("%s", "\x9B\x32J")
+    printf("\x1B[\x32J")
+
+extern UCHAR g_FgColour, g_BgColour;
+extern bool g_Reverse;
 
 #define ArcSetScreenColour(FgColour, BgColour)  do {\
-    char Buf[16];\
-    snprintf(Buf, sizeof(Buf), "\x9B\x33%dm", FgColour); printf("%s", Buf); \
-    snprintf(Buf, sizeof(Buf), "\x9B\x34%dm", BgColour); printf("%s", Buf); \
+    g_FgColour = (UCHAR)FgColour;\
+    g_BgColour = (UCHAR)BgColour;\
+    printf("\x1B[\x33%dm", g_FgColour); \
+    printf("\x1B[\x34%dm", g_BgColour); \
 } while (0)
 
 #define ArcSetScreenAttributes( HighIntensity, Underscored, ReverseVideo ) do {\
-    printf("%s", "\x9B\x30m"); \
+    printf("\x1B[\x30m"); \
     if (HighIntensity) { \
-        printf("%s", "\x9B\x31m"); \
+        printf("\x1B[\x31m"); \
     } \
     if (Underscored) { \
-        printf("%s", "\x9B\x34m"); \
+        printf("\x1B[\x34m"); \
     } \
-    if (ReverseVideo) { \
-        printf("%s", "\x9B\x37m"); \
+    if (ReverseVideo != g_Reverse) { \
+        UCHAR temp = g_BgColour;\
+        g_BgColour = g_FgColour;\
+        g_FgColour = temp;\
+        g_Reverse = ReverseVideo;\
+        ArcSetScreenColour(g_FgColour, g_BgColour); \
     } \
 } while (0);
 
-#define ArcSetPosition( Row, Column ) do {\
-    char Buf[16];\
-    snprintf(Buf, sizeof(Buf), "\x9B%d;%dH", (Row + 1), (Column + 1)); printf("%s", Buf);\
-} while (0);
+#define ArcSetPosition( Row, Column ) \
+    printf("\x1B[%d;%dH", (Row + 1), (Column + 1))
 
-#define ArcMoveCursorLeft(Spaces) do {\
-    char Buf[16];\
-    snprintf(Buf, sizeof(Buf), "\x9B%dD", Spaces); printf("%s", Buf);\
-} while (0);
+#define ArcMoveCursorLeft(Spaces) \
+    printf ("\x1B[%dD", Spaces)
 
 #define ArcMoveCursorToColumn(Spaces) do { \
     printf( "\r" ); \
-    if ( Spaces > 1 ) {\
-        char Buf[16];\
-        snprintf(Buf, sizeof(Buf), "\x9B%dC", Spaces - 1); printf("%s", Buf); \
-    }\
+    if ( Spaces > 1 ) \
+        printf( "\x1B[%dC", Spaces - 1); \
 } while (0);
-
-// I'm lazy, reimplementing the RVL arc firmware keyboard low level driver based on high level ARC calls:
-UCHAR IOSKBD_ReadChar(void);
-bool IOSKBD_CharAvailable(void);
-
-// true if system is oldworld (and thus had to kexec out of Mac OS)
-bool IsSystemOldWorld(void);

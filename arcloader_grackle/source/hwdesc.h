@@ -3,6 +3,7 @@
 enum { // MRF = "MacRISC Flag"
 	MRF_IN_EMULATOR = ARC_BIT(0),
 	MRF_VIA_IS_CUDA = ARC_BIT(1),
+	MRF_OLD_WORLD = ARC_BIT(2),
 };
 
 typedef struct _HW_DESCRIPTION {

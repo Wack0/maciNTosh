@@ -90,6 +90,34 @@ typedef struct ARC_BE ARC_PACKED _APM_SECTOR {
 } APM_SECTOR, *PAPM_SECTOR;
 _Static_assert(sizeof(APM_SECTOR) == 0x200);
 
+// Apple patch partition table entry header
+typedef struct ARC_BE ARC_PACKED _PATCH_TABLE_ENTRY_HEADER {
+	ULONG PatchId;
+	USHORT MajorVersion;
+	USHORT MinorVersion;
+	ULONG Flags;
+	ULONG SectorStart;
+	ULONG Length; // in bytes
+	ULONG Checksum;
+	ULONG SizeOfEntry; // size of this entry, header + extra data
+	char Name[32];
+	UCHAR ExtraData[1]; // pascal string developer name followed by additional data
+} PATCH_TABLE_ENTRY_HEADER, *PPATCH_TABLE_ENTRY_HEADER;
+
+typedef union ARC_BE ARC_PACKED _PATCH_TABLE_ENTRY {
+	PATCH_TABLE_ENTRY_HEADER Header;
+	UCHAR Data[sizeof(PPATCH_TABLE_ENTRY_HEADER)];
+} PATCH_TABLE_ENTRY, *PPATCH_TABLE_ENTRY;
+
+#define PATCH_TABLE_NEXT(pPatch) (PPATCH_TABLE_ENTRY)(&pPatch[0].Data[pPatch[0].Header.SizeOfEntry])
+
+// Apple patch partition first sectors
+typedef struct ARC_BE ARC_PACKED _PATCH_TABLE {
+	USHORT SectorCount; // number of sectors of the patch table itself
+	USHORT PatchCount; // number of entries in the patch table
+	PATCH_TABLE_ENTRY Entries[1]; // array of variable length patch table entries
+} PATCH_TABLE, *PPATCH_TABLE;
+
 enum {
 	MBR_VALID_SIGNATURE = 0xAA55,
 	APM_VALID_SIGNATURE = 0x504D0000,
@@ -1091,12 +1119,8 @@ static ULONG RepartGetFileSize(PVENDOR_VECTOR_TABLE Api, ULONG FileId) {
 #define REPART_CHECK_FILE(var, _max) REPART_INIT_FILE(var); Api->CloseRoutine(h##var); if (len##var == 0 || len##var > _max) return _EFAULT
 #define REPART_CHECK_FILE_EXACT(var, size) REPART_INIT_FILE(var); Api->CloseRoutine(h##var); if (len##var != size) return _EFAULT
 
-/// <summary>
-/// Check if the files required to repartition a disk exists on a source device
-/// </summary>
-/// <param name="SourceDevice">ARC path source device.</param>
-/// <returns>ARC status code.</returns>
-ARC_STATUS ArcFsRepartFilesOnDisk(const char* SourceDevice) {
+
+static ARC_STATUS ArcFsRepartFilesOnDiskNewWorld(const char* SourceDevice) {
 	if (SourceDevice == NULL) return _EINVAL;
 
 	char s_BootPath[1024];
@@ -1108,7 +1132,7 @@ ARC_STATUS ArcFsRepartFilesOnDisk(const char* SourceDevice) {
 	// stage1
 	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "stage1.elf");
 	REPART_CHECK_FILE(Stage1, REPART_STAGE1_MAX);
-	
+
 	// stage2
 	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "stage2.elf");
 	REPART_CHECK_FILE(Stage2, REPART_STAGE2_MAX);
@@ -1128,17 +1152,94 @@ ARC_STATUS ArcFsRepartFilesOnDisk(const char* SourceDevice) {
 	return _ESUCCESS;
 }
 
+static ARC_STATUS ArcFsRepartFilesOnDiskOldWorld(const char* SourceDevice) {
+	if (SourceDevice == NULL) return _EINVAL;
+
+	char s_BootPath[1024];
+	ULONG BootPathIdx = snprintf(s_BootPath, sizeof(s_BootPath), "%s\\", SourceDevice);
+
+	ARC_STATUS Status = _ESUCCESS;
+	PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
+
+	// SCSI driver ptDR
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver43.ptDR.drvr");
+	REPART_CHECK_FILE(43ptDR, REPART_DRIVER_MAX);
+
+	// SCSI driver 1.6
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver43.0x00010600.drvr");
+	REPART_CHECK_FILE(43wiki, REPART_DRIVER_MAX);
+
+	// ATA driver ptDR
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver_ATA.ptDR.drvr");
+	REPART_CHECK_FILE(ATAptDR, REPART_DRIVER_MAX);
+
+	// ATA driver wiki
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver_ATA.wiki.drvr");
+	REPART_CHECK_FILE(ATAwiki, REPART_DRIVER_MAX);
+
+	// Check the APM side of the disk. Expected to have:
+	// 10 partitions
+	// Partition 9: patch partition 256KB
+	// Partition 10: HFS boot partition 256KB
+	// The formatter will copy both of these partition images to disk in raw form.
+	struct {
+		MBR_SECTOR Mbr;
+		APM_SECTOR Apm[10];
+	} Table;
+
+	U32LE hCdRaw;
+	Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+	if (ARC_FAIL(Status)) return Status;
+
+	U32LE Count;
+	Status = Api->ReadRoutine(hCdRaw.v, &Table, sizeof(Table), &Count);
+	Api->CloseRoutine(hCdRaw.v);
+	if (ARC_FAIL(Status) || Count.v != sizeof(Table)) {
+		if (ARC_SUCCESS(Status)) Status = _EBADF;
+		return Status;
+	}
+	if (Table.Mbr.ApmDdt.Signature != DDT_VALID_SIGNATURE) return _EBADF;
+	if (Table.Apm[0].Signature != APM_VALID_SIGNATURE) return _EBADF;
+	if (Table.Apm[0].ApmTableSectors != 10) return _EBADF;
+	if (Table.Apm[8].Signature != APM_VALID_SIGNATURE) return _EBADF;
+	if (Table.Apm[8].ApmTableSectors != 10) return _EBADF;
+	if (Table.Apm[9].Signature != APM_VALID_SIGNATURE) return _EBADF;
+	if (Table.Apm[9].ApmTableSectors != 10) return _EBADF;
+
+
+	if (strcmp(Table.Apm[8].Type, "Apple_Patches") != 0) return _EBADF;
+	if (strcmp(Table.Apm[9].Type, "Apple_HFS") != 0) return _EBADF;
+
+	if (Table.Apm[8].SectorCount != REPART_OWR_APM_PART7_SIZE) return _EBADF;
+	if (Table.Apm[9].SectorCount != REPART_OWR_APM_PART8_SIZE) return _EBADF;
+
+	return _ESUCCESS;
+}
+
 /// <summary>
-/// Repartitions a disk, writing APM and MBR partition tables for Mac and NT operating systems.
+/// Check if the files required to repartition a disk exists on a source device
 /// </summary>
-/// <param name="DeviceId">Device ID</param>
-/// <param name="SourceDevice">Source device path where files get copied from</param>
-/// <param name="NtPartMb">Disk space in MB for the NT partition</param>
-/// <param name="MacPartsMb">Array of disk space in MB for the Mac partitions</param>
-/// <param name="CountMacParts">Number of Mac partitions</param>
-/// <param name="DataWritten">If failed, will be set to true after data has been written to disk.</param>
+/// <param name="SourceDevice">ARC path source device.</param>
 /// <returns>ARC status code.</returns>
-ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG NtPartMb, PULONG MacPartsMb, ULONG CountMacParts, bool* DataWritten) {
+ARC_STATUS ArcFsRepartFilesOnDisk(const char* SourceDevice) {
+	// Use the correct implementation for system time, as Old World systems use a different partition table format than Old World.
+	if (IsSystemOldWorld()) return ArcFsRepartFilesOnDiskOldWorld(SourceDevice);
+	else return ArcFsRepartFilesOnDiskNewWorld(SourceDevice);
+}
+
+static const UCHAR sc_Bpb32M[] = {
+	  0xEB, 0xFE, 0x90, 0x4D, 0x53, 0x44, 0x4F, 0x53, 0x35, 0x2E,
+	  0x30, 0x00, 0x02, 0x04, 0x01, 0x00, 0x02, 0x00, 0x02, 0x00,
+	  0x00, 0xF8, 0x40, 0x00, 0x20, 0x00, 0x40, 0x00, 0x00, 0x00,
+	  0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x80, 0x00, 0x29, 0x15,
+	  0x45, 0x14, 0x2B, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+	  0x20, 0x20, 0x20, 0x20, 0x46, 0x41, 0x54, 0x31, 0x36, 0x20,
+	  0x20, 0x20
+};
+static const UCHAR sc_FatEmpty[] = { 0xF8, 0xFF, 0xFF, 0xFF };
+_Static_assert(__builtin_offsetof(MBR_SECTOR, MbrCode) == 0);
+
+static ARC_STATUS ArcFsRepartitionDiskNewWorld(ULONG DeviceId, const char* SourceDevice, ULONG NtPartMb, PULONG MacPartsMb, ULONG CountMacParts, bool* DataWritten) {
 	// This does repartition the disk for NT.
 	// The disk is split up into an NT part and a Mac part.
 	// DataWritten is set to true when writing to disk starts.
@@ -1186,7 +1287,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	//   This appears to be a bug, the older SCSI Manager (in m68k ASM) skips the partition entirely if the name does not start with "Maci".
 	// - The checksum is over the size in bytes specified in the partition table sector (LengthBoot); but the actual read size is from the DDT.
 	// - The BootCodeArchitecture of the driver partition table entry is always unused. SCSI Manager drivers are always m68k.
-	
+
 	if (DataWritten == NULL || SourceDevice == NULL) return _EINVAL;
 	*DataWritten = false;
 	// If number of APM partitions is over the maximum allowed, do nothing
@@ -1219,7 +1320,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 		if (MacPartsMb[i] > REPART_U32_MAX_SECTORS_IN_MB) return _E2BIG;
 		TotalSizeMb += MacPartsMb[i];
 	}
-	
+
 	// Calculate the disk size in MB, if the total partitions size is greater than that, error.
 	FILE_INFORMATION FileInfo;
 	if (ARC_FAIL(Vectors->GetFileInformation(DeviceId, &FileInfo))) return _EBADF;
@@ -1783,25 +1884,14 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 
 		// Seek to MBR partition 3 and write the empty FAT filesystem there
 		printf("Formatting FAT16 ARC system partition...\r\n");
-		static UCHAR s_Bpb32M[] = {
-			  0xEB, 0xFE, 0x90, 0x4D, 0x53, 0x44, 0x4F, 0x53, 0x35, 0x2E,
-			  0x30, 0x00, 0x02, 0x04, 0x01, 0x00, 0x02, 0x00, 0x02, 0x00,
-			  0x00, 0xF8, 0x40, 0x00, 0x20, 0x00, 0x40, 0x00, 0x00, 0x00,
-			  0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x80, 0x00, 0x29, 0x15,
-			  0x45, 0x14, 0x2B, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-			  0x20, 0x20, 0x20, 0x20, 0x46, 0x41, 0x54, 0x31, 0x36, 0x20,
-			  0x20, 0x20
-		};
-		static UCHAR s_FatEmpty[] = { 0xF8, 0xFF, 0xFF, 0xFF };
-		_Static_assert(__builtin_offsetof(MBR_SECTOR, MbrCode) == 0);
 		memset(&Mbr, 0, sizeof(Mbr));
-		memcpy(Mbr.MbrCode, s_Bpb32M, sizeof(s_Bpb32M));
+		memcpy(Mbr.MbrCode, sc_Bpb32M, sizeof(sc_Bpb32M));
 		Mbr.ValidMbr = MBR_VALID_SIGNATURE;
 		// Copy the boot sector
 		memcpy(SysPartFatFs, &Mbr, sizeof(Mbr));
 		// Copy the two copies of the FAT
 		memset(&Mbr, 0, sizeof(Mbr));
-		memcpy(Mbr.MbrCode, s_FatEmpty, sizeof(s_FatEmpty));
+		memcpy(Mbr.MbrCode, sc_FatEmpty, sizeof(sc_FatEmpty));
 		memcpy(&SysPartFatFs[0x200], &Mbr, sizeof(Mbr));
 		memcpy(&SysPartFatFs[0x8200], &Mbr, sizeof(Mbr));
 
@@ -1889,13 +1979,889 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG 
 	return Status;
 }
 
+static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* SourceDevice, ULONG NtPartMb, PULONG MacPartsMb, ULONG CountMacParts, bool* DataWritten) {
+	// This does repartition the disk for NT.
+	// The disk is split up into an NT part and a Mac part.
+	// DataWritten is set to true when writing to disk starts.
+	// After partitioning, the disk will look like this:
+	// 32KB partition tables
+	// 1 sector (512 bytes) fake-ISO (to ensure OSX 10.4+ does not use the MBR) and MBR backup
+	// 64KB for OS9 SCSI4.3 drivers =>
+	// 54 sectors (0x6C00 bytes) OS9 SCSI4.3 driver partition 1
+	// 74 sectors (0x9400 bytes) OS9 SCSI4.3 driver partition 2
+	// 64KB for OS9 ATA drivers =>
+	// 54 sectors (0x6C00 bytes) OS9 ATA driver partition 1
+	// 74 sectors (0x9400 bytes) OS9 ATA driver partition 2
+	// 256KB patch partition
+	// 256KB HFS partition for booting - copied directly from the boot CD.
+	// Nothing up to 1MB
+	// "NtPartMb"MB NT OS partition (for <=2GB first sector zeroed out, otherwise formatted as NTFS)
+	// 32MB ARC system partition (probably overkill but whatever)
+	// For CountMacParts partitions:
+	// "MacPartsMb[i]"MB marked as HFS (zero out sector 2 and sector (CountSectors-2) to ensure it being considered empty)
+
+	// That's the main high-level structure of the disk
+	// The partition tables are as follows:
+	// APM partition tables: - all dummy partitions are of type "CD_partition_scheme" so OSX disk utility doesn't show them
+	// Partition 1 - partition tables themselves, as usual for APM
+	// Partition 2 - apple_void single sector, this is the fake-ISO and MBR backup. "CD001" at offset 1, and MBR backup at end of sector
+	// Partition 3 - OS9 SCSI4.3 driver partition 1 (ptDR) (54 sectors)
+	// Partition 4 - OS9 SCSI4.3 driver partition 2 (0x00010060) (74 sectors)
+	// Partition 5 - OS9 ATA driver partition 1 (ptDR) (54 sectors)
+	// Partition 6 - OS9 ATA driver partition 2 (wiki) (74 sectors)
+	// Partition 7 - OS9 patch partition (256KB)
+	// Partition 8 - Apple_Boot HFS boot partition (256KB)
+	// Partition 9 - dummy partition, this covers up to 1MB + "NtPartMb" MB NT OS partition
+	// Partition 10 - exactly covers the ARC system partition
+	// Partition 11+ - user-specified Mac partitions.
+	// MBR partition table:
+	// Partition 1 - type 0x41, start 32KB, up to 1MB
+	// Partition 2 - FAT16, OS partition, start 1MB, size "NtPartMb"MB
+	// Partition 3 - FAT16, ARC system partition, start after OS partition, size 32MB
+	// Partition 4 - type 0xEE, active byte 0x7F, covers remainder of disk or 8GB, whichever comes first
+	// The first partition won't be touched by NT, the last partition is defined in such a way that modern OSes (linux, BSDs...) will ignore the MBR entirely
+	// We have to have the OS partition before the ARC system partition, otherwise ARC system partition becomes C: and pagefile gets put there.
+
+	if (DataWritten == NULL || SourceDevice == NULL) return _EINVAL;
+	*DataWritten = false;
+	// If number of APM partitions is over the maximum allowed, do nothing
+	if ((CountMacParts + REPART_OWR_APM_MINIMUM_PARTITIONS) > REPART_APM_MAXIMUM_PARTITIONS) return _E2BIG;
+	// If the NT partition is over the maximum allowed size, do nothing
+	if (NtPartMb > REPART_MAX_NT_PART_IN_MB) return _E2BIG;
+
+	// Get the device.
+	PARC_FILE_TABLE Device = ArcIoGetFile(DeviceId);
+	if (Device == NULL) return _EBADF;
+	// Can't be a file.
+	if (Device->DeviceId != FILE_IS_RAW_DEVICE) return _EBADF;
+	// Sector size must be 512 bytes. atapi.sys expects this anyway!
+	if (Device->GetSectorSize == NULL) return _EBADF;
+	ULONG SectorSize;
+	if (ARC_FAIL(Device->GetSectorSize(DeviceId, &SectorSize))) return _EBADF;
+	if (SectorSize != REPART_SECTOR_SIZE) return _EBADF;
+	PDEVICE_VECTORS Vectors = Device->DeviceEntryTable;
+	PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
+
+	// Size of disk must be able to fit the partition table that we're attempting to write out
+	ULONG TotalSizeMb = 1 // MBR partition 1, APM partitions 1-8 + start of 9
+		+ 32 // MBR partition 2, APM partition 10
+		+ NtPartMb // MBR partition 3, remainder of APM partition 9
+		;
+
+	// MBR partition 4; APM partitions 11 and beyond
+	for (ULONG i = 0; i < CountMacParts; i++) {
+		// no single partition can be beyond 2TB
+		if (MacPartsMb[i] > REPART_U32_MAX_SECTORS_IN_MB) return _E2BIG;
+		TotalSizeMb += MacPartsMb[i];
+	}
+
+	// Calculate the disk size in MB, if the total partitions size is greater than that, error.
+	FILE_INFORMATION FileInfo;
+	if (ARC_FAIL(Vectors->GetFileInformation(DeviceId, &FileInfo))) return _EBADF;
+	ULONG DiskSizeMb = (ULONG)(FileInfo.EndingAddress.QuadPart / 0x100000);
+	if (TotalSizeMb > DiskSizeMb) return _E2BIG;
+
+	// Calculate the path to the files we need and open them and get their file sizes
+	char s_BootPath[1024];
+	ULONG BootPathIdx = snprintf(s_BootPath, sizeof(s_BootPath), "%s\\", SourceDevice);
+
+	printf("Loading files...\r\n");
+	ARC_STATUS Status = _ESUCCESS;
+
+	// ATA driver ptDR
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver_ATA.ptDR.drvr");
+	REPART_INIT_FILE(ATAptDR);
+	if (lenATAptDR == 0) {
+		printf("Could not open %s\r\n", s_BootPath);
+		return _EFAULT;
+	}
+	if (lenATAptDR > REPART_OWR_DRIVER_PTDR_MAX) {
+		Api->CloseRoutine(hATAptDR);
+		printf("Apple_Driver_ATA.ptDR is too big, size=%dKB, maximum=%dKB\r\n", lenATAptDR / 1024, REPART_OWR_DRIVER_PTDR_MAX / 1024);
+		return _EFAULT;
+	}
+
+	// ATA driver wiki
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver_ATA.wiki.drvr");
+	REPART_INIT_FILE(ATAwiki);
+	if (lenATAwiki == 0) {
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not open %s\r\n", s_BootPath);
+		return _EFAULT;
+	}
+	if (lenATAwiki > REPART_OWR_DRIVER_MAIN_MAX) {
+		Api->CloseRoutine(hATAptDR);
+		printf("Apple_Driver_ATA.wiki is too big, size=%dKB, maximum=%dKB\r\n", lenATAwiki / 1024, REPART_OWR_DRIVER_MAIN_MAX / 1024);
+		return _EFAULT;
+	}
+
+	// SCSI43 driver ptDR
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver43.ptDR.drvr");
+	REPART_INIT_FILE(43ptDR);
+	if (len43ptDR == 0) {
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not open %s\r\n", s_BootPath);
+		return _EFAULT;
+	}
+	if (len43ptDR > REPART_OWR_DRIVER_PTDR_MAX) {
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Apple_Driver_43.ptDR is too big, size=%dKB, maximum=%dKB\r\n", len43ptDR / 1024, REPART_OWR_DRIVER_PTDR_MAX / 1024);
+		return _EFAULT;
+	}
+
+	// SCSI43 driver 0x00010600
+	snprintf(&s_BootPath[BootPathIdx], sizeof(s_BootPath) - BootPathIdx, "Drivers\\Apple_Driver43.0x00010600.drvr");
+	REPART_INIT_FILE(43wiki);
+	if (len43wiki == 0) {
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not open %s\r\n", s_BootPath);
+		return _EFAULT;
+	}
+	if (len43wiki > REPART_OWR_DRIVER_MAIN_MAX) {
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Apple_Driver43.0x00010600 is too big, size=%dKB, maximum=%dKB\r\n", len43wiki / 1024, REPART_OWR_DRIVER_MAIN_MAX / 1024);
+		return _EFAULT;
+	}
+
+	ULONG sectorPatch = 0, sectorHfs = 0;
+	ULONG hCdRawBlock = 0;
+	do {
+		struct {
+			MBR_SECTOR Mbr;
+			APM_SECTOR Apm[10];
+		} Table;
+
+		U32LE hCdRaw;
+		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+		if (ARC_FAIL(Status)) break;
+
+		LARGE_INTEGER CdSeekOffset = INT32_TO_LARGE_INTEGER(0);
+		Status = Api->SeekRoutine(hCdRaw.v, &CdSeekOffset, SeekAbsolute);
+		U32LE Count;
+		if (ARC_SUCCESS(Status)) {
+			Status = Api->ReadRoutine(hCdRaw.v, &Table, sizeof(Table), &Count);
+		}
+		Api->CloseRoutine(hCdRaw.v);
+		if (ARC_FAIL(Status) || Count.v != sizeof(Table)) {
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+		Status = _EBADF;
+		if (Table.Mbr.ApmDdt.Signature != DDT_VALID_SIGNATURE) break;
+		if (Table.Apm[0].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[0].ApmTableSectors != 10) break;
+		if (Table.Apm[8].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[8].ApmTableSectors != 10) break;
+		if (Table.Apm[9].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[9].ApmTableSectors != 10) break;
+
+
+		if (strcmp(Table.Apm[8].Type, "Apple_Patches") != 0) break;
+		if (strcmp(Table.Apm[9].Type, "Apple_HFS") != 0) break;
+
+		if (Table.Apm[8].SectorCount != REPART_OWR_APM_PART7_SIZE) break;
+		if (Table.Apm[9].SectorCount != REPART_OWR_APM_PART8_SIZE) break;
+
+		sectorPatch = Table.Apm[8].SectorStart;
+		sectorHfs = Table.Apm[9].SectorStart;
+
+		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+		if (ARC_FAIL(Status)) break;
+		hCdRawBlock = hCdRaw.v;
+	} while (false);
+	if (ARC_FAIL(Status)) {
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not open %s\r\n", SourceDevice);
+		return Status;
+	}
+
+	// Only need to read one at a time, so calculate which of the files is the largest
+	_Static_assert(REPART_OWR_APM_PART7_SIZE == REPART_OWR_APM_PART8_SIZE);
+	ULONG lenMax = REPART_OWR_APM_PART7_SIZE_BYTES;
+	if (lenATAptDR > lenMax) lenMax = lenATAptDR;
+	if (lenATAwiki > lenMax) lenMax = lenATAwiki;
+	if (len43ptDR > lenMax) lenMax = len43ptDR;
+	if (len43wiki > lenMax) lenMax = len43wiki;
+
+	// For the MBR disk signature, use CRC32 of TIME_FIELDS structure. Accurate to the second, but that's the best platform-independent entropy source we have right now...
+	PTIME_FIELDS Time = Api->GetTimeRoutine();
+
+	// Find some free memory that is at least the length we need.
+	ULONG PageLen = lenMax / PAGE_SIZE;
+	if ((lenMax & (PAGE_SIZE - 1)) != 0) PageLen++;
+	PVOID Buffer = NULL;
+	{
+		for (PMEMORY_DESCRIPTOR MemDesc = Api->MemoryRoutine(NULL); MemDesc != NULL; MemDesc = Api->MemoryRoutine(MemDesc)) {
+			if (MemDesc->MemoryType != MemoryFree) continue;
+			if (MemDesc->PageCount < PageLen) continue;
+			Buffer = (PVOID)((MemDesc->BasePage * PAGE_SIZE) | 0x80000000);
+			break;
+		}
+	}
+
+	if (Buffer == NULL) {
+		Api->CloseRoutine(hCdRawBlock);
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not find a free memory chunk of at least %dKB\r\n", (PageLen * PAGE_SIZE) / 1024);
+		return _ENOMEM;
+	}
+
+	// Initialise the MBR sector.
+	printf("Initialising partition tables...\r\n");
+	MBR_SECTOR Mbr = { 0 };
+	// DDT (except drivers, fill that in later)
+	Mbr.ApmDdt.Signature = DDT_VALID_SIGNATURE;
+	Mbr.ApmDdt.SectorSize = REPART_SECTOR_SIZE;
+	Mbr.ApmDdt.SectorCount = (FileInfo.EndingAddress.QuadPart / REPART_SECTOR_SIZE);
+	if (Mbr.ApmDdt.SectorCount == 0) {
+		Api->CloseRoutine(hCdRawBlock);
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not obtain sector count for disk\r\n");
+		return _EBADF; // we need to know size of disk here
+	}
+	Mbr.ApmDdt.DriverCount = 4;
+
+	// MBR itself
+	bool NtPartitionIsExtended = (NtPartMb > 2048); // if NT partition is over 2GB in size, format as NTFS
+	Mbr.ValidMbr = MBR_VALID_SIGNATURE;
+	Mbr.Partitions[0].Type = 0x41;
+	Mbr.Partitions[0].SectorStart = REPART_APM_SECTORS;
+	Mbr.Partitions[0].SectorCount = REPART_MBR_PART1_SIZE;
+	Mbr.Partitions[1].Type = NtPartitionIsExtended ? 0x07 : 0x06;
+	Mbr.Partitions[1].SectorStart = REPART_MBR_PART2_START;
+	Mbr.Partitions[1].SectorCount = NtPartMb * REPART_MB_SECTORS;
+	Mbr.Partitions[2].Type = 0x06;
+	Mbr.Partitions[2].SectorStart = Mbr.Partitions[1].SectorStart + Mbr.Partitions[1].SectorCount;
+	Mbr.Partitions[2].SectorCount = REPART_MBR_PART3_SIZE;
+	Mbr.Partitions[3].Type = 0xEE;
+	Mbr.Partitions[3].Active = 0x7F;
+	Mbr.Partitions[3].SectorStart = Mbr.Partitions[2].SectorStart + REPART_MBR_PART3_SIZE;
+	Mbr.Partitions[3].SectorCount = Mbr.ApmDdt.SectorCount - Mbr.Partitions[3].SectorStart;
+	if (Mbr.ApmDdt.SectorCount > REPART_MBR_CHS_LIMIT)
+		Mbr.Partitions[3].SectorCount = REPART_MBR_CHS_LIMIT - Mbr.Partitions[3].SectorStart;
+	ULONG MbrSignature = Crc32(Time, sizeof(*Time));
+	// Disallow an all-zero MBR signature.
+	if (MbrSignature == 0) MbrSignature = 0xFFFFFFFFul;
+	Mbr.Signature = MbrSignature;
+	ULONG ArcSystemPartitionSectorOffset = (NtPartMb * REPART_MB_SECTORS) + REPART_MBR_PART2_START;
+
+	// Allocate heap space for the APM partitions (maximum : 32KB)
+	ULONG ApmPartitionsCount = CountMacParts + REPART_OWR_APM_MINIMUM_PARTITIONS;
+	if (CountMacParts != 0) ApmPartitionsCount++;
+	PAPM_SECTOR Apm = (PAPM_SECTOR)malloc(sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
+	if (Apm == NULL) {
+		Api->CloseRoutine(hCdRawBlock);
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not allocate memory for APM\r\n");
+		return _ENOMEM;
+	}
+	memset(Apm, 0, sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
+
+	// Allocate heap space for laying out the FAT FS for the ARC system partition
+	enum {
+		SIZE_OF_SYS_PART_FAT_FS = 0x14200
+	};
+	PUCHAR SysPartFatFs = (PUCHAR)malloc(SIZE_OF_SYS_PART_FAT_FS);
+	if (SysPartFatFs == NULL) {
+		free(Apm);
+		Api->CloseRoutine(hCdRawBlock);
+		Api->CloseRoutine(h43wiki);
+		Api->CloseRoutine(h43ptDR);
+		Api->CloseRoutine(hATAwiki);
+		Api->CloseRoutine(hATAptDR);
+		printf("Could not allocate memory for FAT filesystem\r\n");
+		return _ENOMEM;
+	}
+	memset(SysPartFatFs, 0, SIZE_OF_SYS_PART_FAT_FS);
+
+
+	Status = _ESUCCESS;
+	do {
+		// Partition 1: partition tables themselves
+		ApmpInit(&Apm[0], ApmPartitionsCount, REPART_OWR_APM_PART1_START, REPART_OWR_APM_PART1_SIZE, false);
+		strncpy(Apm[0].Name, "Apple", sizeof(Apm[0].Name));
+		strncpy(Apm[0].Type, "Apple_partition_map", sizeof(Apm[0].Type));
+		Apm[0].Status = 3;
+
+		// Partition 2: dummy partition single sector
+		ApmpInit(&Apm[1], ApmPartitionsCount, REPART_OWR_APM_PART2_START, REPART_OWR_APM_PART2_SIZE, true);
+		strncpy(Apm[1].Name, "Extra", sizeof(Apm[1].Name));
+		strncpy(Apm[1].Type, "CD_partition_scheme", sizeof(Apm[1].Type));
+		Apm[1].Status = 0;
+
+		// Partition 3 - OS9 SCSI4.3 driver partition 1 (ptDR) (54 sectors)
+		ApmpInit(&Apm[2], ApmPartitionsCount, REPART_OWR_APM_PART3_START, REPART_OWR_APM_PART3_SIZE, true);
+		strncpy(Apm[2].Name, "Macintosh", sizeof(Apm[2].Name));
+		strncpy(Apm[2].Type, "Apple_Driver43", sizeof(Apm[2].Type));
+		strncpy(Apm[2].BootCodeArchitecture, "68000", sizeof(Apm[2].BootCodeArchitecture));
+		memcpy(Apm[2].UnusedData, "ptDR", sizeof("ptDR"));
+		Apm[2].LengthBoot = len43ptDR;
+		Apm[2].Status |= 0x400;
+
+		// Read the whole ptDR driver into buffer
+		LARGE_INTEGER FileSeekZero = INT32_TO_LARGE_INTEGER(0);
+		U32LE CountLe;
+		ULONG Count;
+		printf("Reading Apple_Driver43.ptDR...\r\n");
+		Status = Api->ReadRoutine(h43ptDR, Buffer, len43ptDR, &CountLe);
+		if (ARC_SUCCESS(Status)) {
+			if (CountLe.v != len43ptDR) Status = _EBADF;
+			else Status = Api->SeekRoutine(h43ptDR, &FileSeekZero, SeekAbsolute);
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Driver43.ptDR\r\n");
+			break;
+		}
+
+		// Fill in the checksum
+		Apm[2].BootCodeChecksum = ApmpDriverChecksum(Buffer, len43ptDR);
+		// Fill in the DDT driver info for this driver. sector start = partition start, sector count = LengthBoot in sectors
+		Mbr.ApmDdt.Drivers[0].SectorStart = REPART_OWR_APM_PART3_START;
+		Mbr.ApmDdt.Drivers[0].SectorCount = len43ptDR / REPART_SECTOR_SIZE;
+		if ((len43ptDR & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[0].SectorCount++;
+		Mbr.ApmDdt.Drivers[0].OsType = 0x0001;
+
+		// Partition 4 - OS9 SCSI4.3 driver partition 2 (0x00010060) (74 sectors)
+		ApmpInit(&Apm[3], ApmPartitionsCount, REPART_OWR_APM_PART4_START, REPART_OWR_APM_PART4_SIZE, true);
+		strncpy(Apm[3].Name, "Macintosh", sizeof(Apm[3].Name));
+		strncpy(Apm[3].Type, "Apple_Driver43", sizeof(Apm[3].Type));
+		strncpy(Apm[3].BootCodeArchitecture, "68000", sizeof(Apm[3].BootCodeArchitecture));
+		{
+			static const UCHAR sc_Version[] = { 0x00, 0x01, 0x00, 0x60 };
+			memcpy(Apm[3].UnusedData, sc_Version, sizeof(sc_Version));
+		}
+		Apm[3].LengthBoot = len43wiki;
+
+		// Read the whole driver into buffer
+		printf("Reading Apple_Driver43.0x00010600...\r\n");
+		Status = Api->ReadRoutine(h43wiki, Buffer, len43wiki, &CountLe);
+		if (ARC_SUCCESS(Status)) {
+			if (CountLe.v != len43wiki) Status = _EBADF;
+			else Status = Api->SeekRoutine(h43wiki, &FileSeekZero, SeekAbsolute);
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Driver43.0x00010600\r\n");
+			break;
+		}
+
+		// Fill in the checksum
+		Apm[3].BootCodeChecksum = ApmpDriverChecksum(Buffer, len43wiki);
+		// Fill in the DDT driver info for this driver. sector start = partition start, sector count = LengthBoot in sectors
+		Mbr.ApmDdt.Drivers[1].SectorStart = REPART_OWR_APM_PART4_START;
+		Mbr.ApmDdt.Drivers[1].SectorCount = len43wiki / REPART_SECTOR_SIZE;
+		if ((len43wiki & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[1].SectorCount++;
+		Mbr.ApmDdt.Drivers[1].OsType = 0xFFFF;
+
+		// Partition 5: Apple_Driver_ATA ptDR
+		ApmpInit(&Apm[4], ApmPartitionsCount, REPART_OWR_APM_PART5_START, REPART_OWR_APM_PART5_SIZE, true);
+		strncpy(Apm[4].Name, "Macintosh", sizeof(Apm[4].Name));
+		strncpy(Apm[4].Type, "Apple_Driver_ATA", sizeof(Apm[4].Type));
+		strncpy(Apm[4].BootCodeArchitecture, "68000", sizeof(Apm[4].BootCodeArchitecture));
+		memcpy(Apm[4].UnusedData, "ptDR", sizeof("ptDR"));
+		Apm[4].LengthBoot = lenATAptDR;
+		Apm[4].Status |= 0x400;
+
+		// Read the whole ptDR driver into buffer
+		printf("Reading Apple_Driver_ATA.ptDR...\r\n");
+		Status = Api->ReadRoutine(hATAptDR, Buffer, lenATAptDR, &CountLe);
+		if (ARC_SUCCESS(Status)) {
+			if (CountLe.v != lenATAptDR) Status = _EBADF;
+			else Status = Api->SeekRoutine(hATAptDR, &FileSeekZero, SeekAbsolute);
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Driver_ATA.ptDR\r\n");
+			break;
+		}
+
+		// Fill in the checksum
+		Apm[4].BootCodeChecksum = ApmpDriverChecksum(Buffer, lenATAptDR);
+		// Fill in the DDT driver info for this driver. sector start = partition start, sector count = LengthBoot in sectors
+		Mbr.ApmDdt.Drivers[2].SectorStart = REPART_OWR_APM_PART5_START;
+		Mbr.ApmDdt.Drivers[2].SectorCount = lenATAptDR / REPART_SECTOR_SIZE;
+		if ((lenATAptDR & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[2].SectorCount++;
+		Mbr.ApmDdt.Drivers[2].OsType = 0x0701;
+
+		// Partition 6: Apple_Driver_ATA wiki
+		ApmpInit(&Apm[5], ApmPartitionsCount, REPART_OWR_APM_PART6_START, REPART_OWR_APM_PART6_SIZE, true);
+		strncpy(Apm[5].Name, "Macintosh", sizeof(Apm[5].Name));
+		strncpy(Apm[5].Type, "Apple_Driver_ATA", sizeof(Apm[5].Type));
+		strncpy(Apm[5].BootCodeArchitecture, "68000", sizeof(Apm[5].BootCodeArchitecture));
+		memcpy(Apm[5].UnusedData, "wiki", sizeof("wiki"));
+		Apm[5].LengthBoot = lenATAwiki;
+
+		// Read the whole wiki driver into buffer
+		printf("Reading Apple_Driver_ATA.wiki...\r\n");
+		Status = Api->ReadRoutine(hATAwiki, Buffer, lenATAwiki, &CountLe);
+		if (ARC_SUCCESS(Status)) {
+			if (CountLe.v != lenATAwiki) Status = _EBADF;
+			else Status = Api->SeekRoutine(hATAwiki, &FileSeekZero, SeekAbsolute);
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Driver_ATA.wiki\r\n");
+			break;
+		}
+
+		// Try to patch the wiki driver in memory.
+		// Pattern: 0x01FE ; cmpi
+		// This matches move.b 0x1FE(x),y ; cmpi.w #$55,y
+		// We patch the 0x1FE (offset of MBR signature) to zero
+		// This allows OS9 to see the APM side of the disk even if MBR is visible
+		ULONG drvWikiPatchOffset = lenATAwiki;
+		{
+			static UCHAR sc_Pattern[] = { 0x01, 0xFE, 0x0C };
+			PUCHAR pWikiPatch = mem_mem(Buffer, sc_Pattern, lenATAwiki, sizeof(sc_Pattern));
+			if (pWikiPatch != NULL) {
+				drvWikiPatchOffset = (ULONG)pWikiPatch - (ULONG)Buffer;
+				pWikiPatch[0] = pWikiPatch[1] = 0;
+			}
+		}
+
+		// Fill in the checksum
+		Apm[5].BootCodeChecksum = ApmpDriverChecksum(Buffer, lenATAwiki);
+		// Fill in the DDT driver info for this driver. sector start = partition start, sector count = LengthBoot in sectors
+		Mbr.ApmDdt.Drivers[3].SectorStart = REPART_OWR_APM_PART6_START;
+		Mbr.ApmDdt.Drivers[3].SectorCount = lenATAwiki / REPART_SECTOR_SIZE;
+		if ((lenATAwiki & (REPART_SECTOR_SIZE - 1)) != 0) Mbr.ApmDdt.Drivers[3].SectorCount++;
+		Mbr.ApmDdt.Drivers[3].OsType = 0xF8FF;
+
+		// Partition 7: apple patch partition
+		ApmpInit(&Apm[6], ApmPartitionsCount, REPART_OWR_APM_PART7_START, REPART_OWR_APM_PART7_SIZE, false);
+		strncpy(Apm[6].Name, "Patch Partition", sizeof(Apm[6].Name));
+		strncpy(Apm[6].Type, "Apple_Patches", sizeof(Apm[6].Type));
+		Apm[6].Status = 1;
+
+		// Partition 8: boot partition
+		ApmpInit(&Apm[7], ApmPartitionsCount, REPART_OWR_APM_PART8_START, REPART_OWR_APM_PART8_SIZE, false);
+		strncpy(Apm[7].Name, "Windows NT", sizeof(Apm[7].Name));
+		strncpy(Apm[7].Type, "Apple_HFS", sizeof(Apm[7].Type));
+		Apm[7].Status = 0x40000033;
+
+		// Partition 9: dummy partition for covering up to the end of the OS partition in MBR for NT
+		// Calculate the length for this
+		ULONG Part9SectorSize = (ArcSystemPartitionSectorOffset - REPART_OWR_APM_PART9_START);
+		ApmpInit(&Apm[8], ApmPartitionsCount, REPART_OWR_APM_PART9_START, Part9SectorSize, false);
+		strncpy(Apm[8].Name, "Extra", sizeof(Apm[8].Name));
+		strncpy(Apm[8].Type, "CD_partition_scheme", sizeof(Apm[8].Type));
+		Apm[8].Status = 0;
+
+		// Partition 10: covers the ARC system partition exactly
+		ULONG SysPartStart = REPART_OWR_APM_PART9_START + Part9SectorSize;
+		ApmpInit(&Apm[9], ApmPartitionsCount, SysPartStart, REPART_MBR_PART3_SIZE, false);
+		strncpy(Apm[9].Name, "ARC System Partition", sizeof(Apm[9].Name));
+		strncpy(Apm[9].Type, "DOS_FAT_16", sizeof(Apm[9].Type));
+		Apm[9].Status = 0x40000033;
+
+		// Partition 9 and above: the Mac partitions
+		ULONG MacPartStart = SysPartStart + REPART_MBR_PART3_SIZE;
+		for (ULONG i = 0; i < CountMacParts; i++) {
+			ULONG MacPartSectors = MacPartsMb[i] * REPART_MB_SECTORS;
+
+			// For the last partition, we need to leave 4 sectors free at the end of the disk for some reason.
+			// Obviously only if we create mac partitions.
+			if (i == (CountMacParts - 1)) {
+				ULONG RemainingSpace = (DiskSizeMb * REPART_MB_SECTORS) - (MacPartStart + MacPartSectors);
+				if (RemainingSpace == 0) {
+					MacPartSectors -= 4;
+				}
+			}
+
+			ApmpInit(&Apm[10 + i], ApmPartitionsCount, MacPartStart, MacPartSectors, false);
+			strncpy(Apm[10 + i].Type, "Apple_HFS", sizeof(Apm[10 + i].Type)); // this type will allow OSX Disk Utility to format the Mac partitions
+			static const char s_MacPartName[] = "Mac Partition ";
+			strncpy(Apm[10 + i].Name, s_MacPartName, sizeof(Apm[10 + i].Name));
+			ULONG CountIndex = sizeof(s_MacPartName) - 1;
+			ULONG IndexTens = (i / 10);
+			Apm[10 + i].Name[CountIndex + 0] = IndexTens + (IndexTens >= 10 ? ('A' - 10) : '0');
+			Apm[10 + i].Name[CountIndex + 1] = (i % 10) + '0';
+			Apm[10 + i].Name[CountIndex + 2] = 0;
+
+			Apm[10 + i].Status = 0x40000033;
+
+			// calculate the start of the next partition
+			MacPartStart += MacPartSectors;
+		}
+
+		// Final partition: free space
+		ULONG EmptySpace = (DiskSizeMb * REPART_MB_SECTORS) - MacPartStart;
+		if (EmptySpace > 0) {
+			ApmpInit(&Apm[10 + CountMacParts], ApmPartitionsCount, MacPartStart, EmptySpace, false);
+			strncpy(Apm[10 + CountMacParts].Name, "Extra", sizeof(Apm[10 + CountMacParts].Name));
+			strncpy(Apm[10 + CountMacParts].Type, "Apple_Free", sizeof(Apm[10 + CountMacParts].Type));
+			Apm[10 + CountMacParts].Status = 0;
+		}
+
+		// All partition tables have now been computed in memory.
+		// Write everything to disk.
+		// This is where overwriting existing data on the disk starts!
+		LARGE_INTEGER SeekOffset = INT32_TO_LARGE_INTEGER(0);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_FAIL(Status)) break;
+		// Seek successful so perform the write. Print progress now (after seek), as we are about to start committing to writing this disk layout out:
+		printf("Writing partition tables...\r\n");
+		*DataWritten = true;
+		// MBR first
+		Count = 0;
+		Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+		if (ARC_FAIL(Status) || Count != sizeof(Mbr)) {
+			printf("Could not write DDT and MBR partition table\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+		// then APM
+		Count = 0;
+		Status = Vectors->Write(DeviceId, Apm, sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS, &Count);
+		if (ARC_FAIL(Status) || Count != sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS) {
+			printf("Could not write APM partition table\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+		// Current position: backup MBR, so calculate that:
+		// Wipe the DDT out of the in-memory MBR
+		memset(Mbr.MbrCode, 0, sizeof(Mbr.MbrCode));
+		// and write the ISO magic at offset 1
+		memcpy(&Mbr.MbrCode[1], "CD001", sizeof("CD001") - 1);
+		// and write this backup MBR to the sector:
+		Count = 0;
+		Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+		if (ARC_FAIL(Status) || Count != sizeof(Mbr)) {
+			printf("Could not write backup MBR partition table\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+
+		// Current position: partition 3 (Apple_Driver43 ptDR)
+		printf("Writing Apple_Driver43.ptDR...\r\n");
+		// Read the file again and ensure checksum matches
+		Status = Api->ReadRoutine(h43ptDR, Buffer, len43ptDR, &CountLe);
+		if (ARC_FAIL(Status) || CountLe.v != len43ptDR || Apm[2].BootCodeChecksum != ApmpDriverChecksum(Buffer, len43ptDR)) {
+			printf("Could not read Apple_Driver43.ptDR\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+		// Write to disk
+		Count = 0;
+		Status = Vectors->Write(DeviceId, Buffer, len43ptDR, &Count);
+		if (ARC_FAIL(Status) || Count != len43ptDR) {
+			printf("Could not write Apple_Driver_ATA.ptDR\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+
+		// Current position: probably somewhere inside partition 3
+		printf("Writing Apple_Driver43.0x00010600...\r\n");
+
+		// Read the file again and ensure checksum matches
+		Status = Api->ReadRoutine(h43wiki, Buffer, len43wiki, &CountLe);
+		if (ARC_FAIL(Status) || CountLe.v != len43wiki || Apm[3].BootCodeChecksum != ApmpDriverChecksum(Buffer, len43wiki)) {
+			printf("Could not read Apple_Driver43.0x00010600\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+
+
+		// Seek to partition 4
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART4_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			Count = 0;
+			Status = Vectors->Write(DeviceId, Buffer, len43wiki, &Count);
+			if (ARC_SUCCESS(Status) && Count != len43wiki) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not write Apple_Driver43.0x00010600\r\n");
+			break;
+		}
+
+		// Current position: probably somewhere inside partition 4
+		printf("Writing Apple_Driver_ATA.ptDR...\r\n");
+		// Read the file again and ensure checksum matches
+		Status = Api->ReadRoutine(hATAptDR, Buffer, lenATAptDR, &CountLe);
+		if (ARC_FAIL(Status) || CountLe.v != lenATAptDR || Apm[4].BootCodeChecksum != ApmpDriverChecksum(Buffer, lenATAptDR)) {
+			printf("Could not read Apple_Driver_ATA.ptDR\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+		// Seek to partition 5
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART5_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			Count = 0;
+			Status = Vectors->Write(DeviceId, Buffer, lenATAptDR, &Count);
+			if (ARC_SUCCESS(Status) && Count != lenATAptDR) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not write Apple_Driver_ATA.ptDR\r\n");
+			break;
+		}
+
+		// Current position: probably somewhere inside partition 5
+		printf("Writing Apple_Driver_ATA.wiki...\r\n");
+
+		// Read the file again and ensure checksum matches
+		// Make the patch again if the pattern was found earlier
+		Status = Api->ReadRoutine(hATAwiki, Buffer, lenATAwiki, &CountLe);
+		if (drvWikiPatchOffset != lenATAwiki && ARC_SUCCESS(Status) && CountLe.v == lenATAwiki) {
+			PBYTE pWikiPatch = (PBYTE)Buffer + drvWikiPatchOffset;
+			pWikiPatch[0] = pWikiPatch[1] = 0;
+		}
+		if (ARC_FAIL(Status) || CountLe.v != lenATAwiki || Apm[5].BootCodeChecksum != ApmpDriverChecksum(Buffer, lenATAwiki)) {
+			printf("Could not read Apple_Driver_ATA.wiki\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+
+
+		// Seek to partition 6
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART6_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			Count = 0;
+			Status = Vectors->Write(DeviceId, Buffer, lenATAwiki, &Count);
+			if (ARC_SUCCESS(Status) && Count != lenATAwiki) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not write Apple_Driver_ATA.wiki\r\n");
+			break;
+		}
+
+		// Read the apple_patch partition from raw source disk.
+		SeekOffset = INT32_TO_LARGE_INTEGER(sectorPatch);
+		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
+		Status = Vectors->Seek(hCdRawBlock, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			Count = 0;
+			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART7_SIZE_BYTES, &Count);
+			if (ARC_SUCCESS(Status) && Count != REPART_OWR_APM_PART7_SIZE_BYTES) Status = _EBADF;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Patches\r\n");
+			break;
+		}
+
+		{
+			PPATCH_TABLE PatchTable = (PPATCH_TABLE)Buffer;
+			PPATCH_TABLE_ENTRY Entry = PatchTable->Entries;
+			// Patch the header table entries to use the correct sector size.
+			for (int i = 0; i < PatchTable->PatchCount; i++, Entry = PATCH_TABLE_NEXT(Entry)) {
+				Entry->Header.SectorStart *= (0x800 / REPART_SECTOR_SIZE);
+			}
+			// Reduce the patch count by 1 to prevent the snag patch from being loaded; this should never be loaded when not booting from optical media.
+			PatchTable->PatchCount--;
+		}
+		
+		// Seek to partition 7
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART7_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			Count = 0;
+			Status = Vectors->Write(DeviceId, Buffer, REPART_OWR_APM_PART7_SIZE_BYTES, &Count);
+			if (ARC_SUCCESS(Status) && Count != REPART_OWR_APM_PART7_SIZE_BYTES) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not write Apple_Patches\r\n");
+			break;
+		}
+
+
+		// Seek to partition 8 (HFS boot partition)
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART8_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_FAIL(Status)) {
+			printf("Could not seek to boot partition\r\n");
+			break;
+		}
+		printf("Writing boot partition...\r\n");
+		// Read bootimg
+		SeekOffset = INT32_TO_LARGE_INTEGER(sectorHfs);
+		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
+		Status = Vectors->Seek(hCdRawBlock, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			Count = 0;
+			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &Count);
+			if (ARC_SUCCESS(Status) && Count != REPART_OWR_APM_PART8_SIZE_BYTES) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not read boot partition\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+		// Everything has been read into place, write to disk.
+		Count = 0;
+		Status = Vectors->Write(DeviceId, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &Count);
+		if (ARC_FAIL(Status) || Count != REPART_OWR_APM_PART8_SIZE_BYTES) {
+			printf("Could not write boot partition\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+
+		// Seek to partition 9 and format the ARC NV area
+		printf("Formatting ARC non-volatile storage...\r\n");
+		SeekOffset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART9_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			memset(&Mbr, 0, sizeof(Mbr));
+			for (ULONG Sector = 0; ARC_SUCCESS(Status) && Sector < 2; Sector++) {
+				Count = 0;
+				Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+				if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
+			}
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not format ARC non-volatile storage\r\n");
+			break;
+		}
+
+		// Seek to MBR partition 3 and write the empty FAT filesystem there
+		printf("Formatting FAT16 ARC system partition...\r\n");
+		memset(&Mbr, 0, sizeof(Mbr));
+		memcpy(Mbr.MbrCode, sc_Bpb32M, sizeof(sc_Bpb32M));
+		Mbr.ValidMbr = MBR_VALID_SIGNATURE;
+		// Copy the boot sector
+		memcpy(SysPartFatFs, &Mbr, sizeof(Mbr));
+		// Copy the two copies of the FAT
+		memset(&Mbr, 0, sizeof(Mbr));
+		memcpy(Mbr.MbrCode, sc_FatEmpty, sizeof(sc_FatEmpty));
+		memcpy(&SysPartFatFs[0x200], &Mbr, sizeof(Mbr));
+		memcpy(&SysPartFatFs[0x8200], &Mbr, sizeof(Mbr));
+
+
+		SeekOffset = INT32_TO_LARGE_INTEGER(ArcSystemPartitionSectorOffset);
+		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
+		Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status)) {
+			// Write to disk
+			Count = 0;
+			Status = Vectors->Write(DeviceId, SysPartFatFs, SIZE_OF_SYS_PART_FAT_FS, &Count);
+			if (ARC_SUCCESS(Status) && Count != SIZE_OF_SYS_PART_FAT_FS) Status = _EIO;
+		}
+		if (ARC_FAIL(Status)) {
+			printf("Could not format ARC system partition\r\n");
+			break;
+		}
+
+		// Seek to MBR partition 2 and write zeroes over its first sector (this is enough to ensure no existing FAT/NTFS partition is there, right?)
+		memset(&Mbr, 0, sizeof(Mbr));
+		ULONG PartitionBeingWiped = 0;
+		if (NtPartitionIsExtended) {
+			printf("Formatting NT OS partition as NTFS...\r\n");
+			// Format as NTFS!
+			Status = RpFormatNtfs(DeviceId, Vectors, REPART_MBR_PART2_START, NtPartMb, MbrSignature);
+		}
+		else {
+			printf("Ensuring user partitions are all considered unformatted...\r\n");
+			SeekOffset = INT32_TO_LARGE_INTEGER(REPART_MBR_PART2_START * REPART_SECTOR_SIZE);
+			Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+			if (ARC_SUCCESS(Status)) {
+				// Write to disk
+				Count = 0;
+				Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+				if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
+			}
+		}
+		if (ARC_SUCCESS(Status)) {
+			if (NtPartitionIsExtended) printf("Ensuring Mac partitions are all considered unformatted...\r\n");
+			// For each user APM partition, erase the third sector and second from last sector
+			for (ULONG i = 0; i < CountMacParts; i++) {
+				PartitionBeingWiped++;
+				// third sector
+				int64_t SeekOffset64 = Apm[10 + i].SectorStart;
+				SeekOffset64 += 2;
+				SeekOffset64 *= REPART_SECTOR_SIZE;
+				SeekOffset = INT64_TO_LARGE_INTEGER(SeekOffset64);
+				Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+				if (ARC_FAIL(Status)) break;
+				Count = 0;
+				Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+				if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
+				if (ARC_FAIL(Status)) break;
+
+				// second from last sector
+				SeekOffset64 = Apm[10 + i].SectorStart;
+				SeekOffset64 += Apm[10 + i].SectorCount - 2;
+				SeekOffset = INT64_TO_LARGE_INTEGER(SeekOffset64);
+				Status = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+				if (ARC_FAIL(Status)) break;
+				Count = 0;
+				Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+				if (ARC_SUCCESS(Status) && Count != sizeof(Mbr)) Status = _EIO;
+				if (ARC_FAIL(Status)) break;
+			}
+		}
+		if (ARC_FAIL(Status)) {
+			if (PartitionBeingWiped == 0) printf("Could not clear initial sectors of NT partition\r\n");
+			else printf("Could not clear initial sectors of Mac partition %d\r\n", PartitionBeingWiped);
+			break;
+		}
+
+		// Everything is done
+		printf("Successfully written partition tables and installed ARC firmware.\r\n");
+	} while (false);
+
+	if (ARC_FAIL(Status) && *DataWritten) {
+		// Data was written to the disk.
+		// Attempt to zero the first sector, to ensure TBXI doesn't crash trying to load potentially zeroed or malformed drivers.
+		memset(&Mbr, 0, sizeof(Mbr));
+		LARGE_INTEGER SeekOffset = INT32_TO_LARGE_INTEGER(0);
+		ARC_STATUS Status2 = Vectors->Seek(DeviceId, &SeekOffset, SeekAbsolute);
+		if (ARC_SUCCESS(Status2)) {
+			ULONG Count = 0;
+			Status2 = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
+		}
+	}
+
+	free(SysPartFatFs);
+	free(Apm);
+
+	Api->CloseRoutine(hCdRawBlock);
+	Api->CloseRoutine(h43wiki);
+	Api->CloseRoutine(h43ptDR);
+	Api->CloseRoutine(hATAwiki);
+	Api->CloseRoutine(hATAptDR);
+	return Status;
+}
+
 /// <summary>
-/// Updates the boot partition to the ARC firmware version located on the boot media.
+/// Repartitions a disk, writing APM and MBR partition tables for Mac and NT operating systems.
 /// </summary>
 /// <param name="DeviceId">Device ID</param>
 /// <param name="SourceDevice">Source device path where files get copied from</param>
-/// <returns>ARC status code</returns>
-ARC_STATUS ArcFsUpdateBootPartition(ULONG DeviceId, const char* SourceDevice) {
+/// <param name="NtPartMb">Disk space in MB for the NT partition</param>
+/// <param name="MacPartsMb">Array of disk space in MB for the Mac partitions</param>
+/// <param name="CountMacParts">Number of Mac partitions</param>
+/// <param name="DataWritten">If failed, will be set to true after data has been written to disk.</param>
+/// <returns>ARC status code.</returns>
+ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, const char* SourceDevice, ULONG NtPartMb, PULONG MacPartsMb, ULONG CountMacParts, bool* DataWritten) {
+	// Use the correct implementation for system time, as Old World systems use a different partition table format than Old World.
+	if (IsSystemOldWorld()) return ArcFsRepartitionDiskOldWorld(DeviceId, SourceDevice, NtPartMb, MacPartsMb, CountMacParts, DataWritten);
+	else return ArcFsRepartitionDiskNewWorld(DeviceId, SourceDevice, NtPartMb, MacPartsMb, CountMacParts, DataWritten);
+}
+
+static ARC_STATUS ArcFsUpdateBootPartitionNewWorld(ULONG DeviceId, const char* SourceDevice) {
 	// Get the device.
 	PARC_FILE_TABLE Device = ArcIoGetFile(DeviceId);
 	if (Device == NULL) return _EBADF;
@@ -2053,6 +3019,153 @@ ARC_STATUS ArcFsUpdateBootPartition(ULONG DeviceId, const char* SourceDevice) {
 	Api->CloseRoutine(hStage2);
 	Api->CloseRoutine(hStage1);
 	return Status;
+}
+
+static ARC_STATUS ArcFsUpdateBootPartitionOldWorld(ULONG DeviceId, const char* SourceDevice) {
+	// Get the device.
+	PARC_FILE_TABLE Device = ArcIoGetFile(DeviceId);
+	if (Device == NULL) return _EBADF;
+	// Can't be a file.
+	if (Device->DeviceId != FILE_IS_RAW_DEVICE) return _EBADF;
+	// Sector size must be 512 bytes. atapi.sys expects this anyway!
+	if (Device->GetSectorSize == NULL) return _EBADF;
+	ULONG SectorSize;
+	if (ARC_FAIL(Device->GetSectorSize(DeviceId, &SectorSize))) return _EBADF;
+	if (SectorSize != REPART_SECTOR_SIZE) return _EBADF;
+	PDEVICE_VECTORS Vectors = Device->DeviceEntryTable;
+
+	// Ensure APM partition 8 is our boot partition.
+	APM_SECTOR ApmEntry;
+	ULONG Count = 0;
+	LARGE_INTEGER Offset = INT32_TO_LARGE_INTEGER(8 * REPART_SECTOR_SIZE);
+	ARC_STATUS Status = Vectors->Seek(DeviceId, &Offset, SeekAbsolute);
+	if (ARC_FAIL(Status)) return Status;
+	Status = Vectors->Read(DeviceId, &ApmEntry, sizeof(ApmEntry), &Count);
+	if (ARC_SUCCESS(Status) && Count != sizeof(ApmEntry)) Status = _EIO;
+	if (ARC_FAIL(Status)) return Status;
+	if (ApmEntry.Signature != APM_VALID_SIGNATURE) return _EBADF;
+	if (ApmEntry.ApmTableSectors < REPART_OWR_APM_MINIMUM_PARTITIONS) return _EBADF;
+	if (ApmEntry.ApmTableSectors > REPART_APM_MAXIMUM_PARTITIONS) return _EBADF;
+	if (ApmEntry.SectorStart != REPART_OWR_APM_PART8_START) return _EBADF;
+	if (ApmEntry.SectorCount != REPART_OWR_APM_PART8_SIZE) return _EBADF;
+	if (strcmp(ApmEntry.Type, "Apple_HFS") != 0) return _EBADF;
+
+	// APM partition entry looks ok
+	// craft new image in memory:
+
+	// Find some free memory that is at least the length we need.
+	ULONG PageLen = REPART_BOOTIMG_SIZE / PAGE_SIZE;
+	if ((REPART_BOOTIMG_SIZE & (PAGE_SIZE - 1)) != 0) PageLen++;
+	PVOID Buffer = NULL;
+	{
+		PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
+
+		for (PMEMORY_DESCRIPTOR MemDesc = Api->MemoryRoutine(NULL); MemDesc != NULL; MemDesc = Api->MemoryRoutine(MemDesc)) {
+			if (MemDesc->MemoryType != MemoryFree) continue;
+			if (MemDesc->PageCount < PageLen) continue;
+			Buffer = (PVOID)((MemDesc->BasePage * PAGE_SIZE) | 0x80000000);
+			break;
+		}
+	}
+	if (Buffer == NULL) return _ENOMEM;
+
+	PVENDOR_VECTOR_TABLE Api = ARC_VENDOR_VECTORS();
+
+	printf("Loading files...\r\n");
+	ULONG sectorHfs = 0;
+	ULONG hCdRawBlock = 0;
+	do {
+		struct {
+			MBR_SECTOR Mbr;
+			APM_SECTOR Apm[10];
+		} Table;
+
+		U32LE hCdRaw;
+		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+		if (ARC_FAIL(Status)) break;
+
+		U32LE Count;
+		Status = Api->ReadRoutine(hCdRaw.v, &Table, sizeof(Table), &Count);
+		Api->CloseRoutine(hCdRaw.v);
+		if (ARC_FAIL(Status) || Count.v != sizeof(Table)) {
+			if (ARC_SUCCESS(Status)) Status = _EBADF;
+			break;
+		}
+		Status = _EBADF;
+		if (Table.Mbr.ApmDdt.Signature != DDT_VALID_SIGNATURE) break;
+		if (Table.Apm[0].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[0].ApmTableSectors != 10) break;
+		if (Table.Apm[8].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[8].ApmTableSectors != 10) break;
+		if (Table.Apm[9].Signature != APM_VALID_SIGNATURE) break;
+		if (Table.Apm[9].ApmTableSectors != 10) break;
+
+
+		if (strcmp(Table.Apm[8].Type, "Apple_Patches") != 0) break;
+		if (strcmp(Table.Apm[9].Type, "Apple_HFS") != 0) break;
+
+		if (Table.Apm[8].SectorCount != REPART_OWR_APM_PART7_SIZE) break;
+		if (Table.Apm[9].SectorCount != REPART_OWR_APM_PART8_SIZE) break;
+
+		sectorHfs = Table.Apm[9].SectorStart;
+
+		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+		if (ARC_FAIL(Status)) break;
+		hCdRawBlock = hCdRaw.v;
+	} while (false);
+
+	if (ARC_FAIL(Status)) {
+		printf("Could not open %s\r\n", SourceDevice);
+		return Status;
+	}
+
+	// Read bootimg
+	U32LE CountLe;
+	CountLe.v = 0;
+	LARGE_INTEGER SeekOffset = INT32_TO_LARGE_INTEGER(sectorHfs);
+	SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
+	Status = Api->SeekRoutine(hCdRawBlock, &SeekOffset, SeekAbsolute);
+	if (ARC_SUCCESS(Status)) Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &CountLe);
+	Api->CloseRoutine(hCdRawBlock);
+	if (ARC_FAIL(Status) || CountLe.v != REPART_OWR_APM_PART8_SIZE_BYTES) {
+		printf("Could not read boot partition\r\n");
+		if (ARC_SUCCESS(Status)) Status = _EBADF;
+
+		return Status;
+	}
+
+	do {
+		printf("Writing boot partition...\r\n");
+		// Seek to correct location
+		Offset = INT32_TO_LARGE_INTEGER(REPART_OWR_APM_PART8_START * REPART_SECTOR_SIZE);
+		Status = Vectors->Seek(DeviceId, &Offset, SeekAbsolute);
+		if (ARC_FAIL(Status)) {
+			printf("Could not write boot partition\r\n");
+			break;
+		}
+		// Everything has been read into place, write to disk.
+		Count = 0;
+		Status = Vectors->Write(DeviceId, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &Count);
+		if (ARC_FAIL(Status) || Count != REPART_OWR_APM_PART8_SIZE_BYTES) {
+			printf("Could not write boot partition\r\n");
+			if (ARC_SUCCESS(Status)) Status = _EIO;
+			break;
+		}
+		printf("Successfully updated ARC firmware boot partition.\r\n");
+	} while (false);
+	
+	return Status;
+}
+
+/// <summary>
+/// Updates the boot partition to the ARC firmware version located on the boot media.
+/// </summary>
+/// <param name="DeviceId">Device ID</param>
+/// <param name="SourceDevice">Source device path where files get copied from</param>
+/// <returns>ARC status code</returns>
+ARC_STATUS ArcFsUpdateBootPartition(ULONG DeviceId, const char* SourceDevice) {
+	if (IsSystemOldWorld()) return ArcFsUpdateBootPartitionOldWorld(DeviceId, SourceDevice);
+	else return ArcFsUpdateBootPartitionNewWorld(DeviceId, SourceDevice);
 }
 
 static void MbrpCopyTables(PMBR_SECTOR Destination, PMBR_SECTOR Source) {

@@ -234,6 +234,9 @@ void ArcInitRamDisk(ULONG ControllerKey, PVOID Pointer, ULONG Length) {
 	s_RamdiskLoaded = true;
 }
 
+static bool s_IsOldWorld = false;
+bool IsSystemOldWorld(void) { return s_IsOldWorld; }
+
 static void ArcMain() {
 	// Initialise the ARC firmware.
 	PSYSTEM_PARAMETER_BLOCK Spb = ARC_SYSTEM_TABLE();
@@ -712,6 +715,7 @@ void ARC_NORETURN FwMain(PHW_DESCRIPTION Desc) {
 	HW_DESCRIPTION StackDesc;
 	memcpy(&StackDesc, Desc, sizeof(StackDesc));
 	Desc = &StackDesc;
+	s_IsOldWorld = (Desc->MrFlags & MRF_OLD_WORLD) != 0;
 
 	// Initialise the console. We know where it is. Just convert it from physical address to our BAT mapping.
 	ArcConsoleInit(PciPhysToVirt(Desc->FrameBufferBase), 0, 0, Desc->FrameBufferWidth, Desc->FrameBufferHeight, Desc->FrameBufferStride);
