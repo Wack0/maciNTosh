@@ -2172,10 +2172,7 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 
 		sectorPatch = Table.Apm[8].SectorStart;
 		sectorHfs = Table.Apm[9].SectorStart;
-
-		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
-		if (ARC_FAIL(Status)) break;
-		hCdRawBlock = hCdRaw.v;
+		Status = _ESUCCESS;
 	} while (false);
 	if (ARC_FAIL(Status)) {
 		Api->CloseRoutine(h43wiki);
@@ -2211,7 +2208,6 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 	}
 
 	if (Buffer == NULL) {
-		Api->CloseRoutine(hCdRawBlock);
 		Api->CloseRoutine(h43wiki);
 		Api->CloseRoutine(h43ptDR);
 		Api->CloseRoutine(hATAwiki);
@@ -2228,7 +2224,6 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 	Mbr.ApmDdt.SectorSize = REPART_SECTOR_SIZE;
 	Mbr.ApmDdt.SectorCount = (FileInfo.EndingAddress.QuadPart / REPART_SECTOR_SIZE);
 	if (Mbr.ApmDdt.SectorCount == 0) {
-		Api->CloseRoutine(hCdRawBlock);
 		Api->CloseRoutine(h43wiki);
 		Api->CloseRoutine(h43ptDR);
 		Api->CloseRoutine(hATAwiki);
@@ -2267,7 +2262,6 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 	if (CountMacParts != 0) ApmPartitionsCount++;
 	PAPM_SECTOR Apm = (PAPM_SECTOR)malloc(sizeof(APM_SECTOR) * REPART_APM_MAXIMUM_PARTITIONS);
 	if (Apm == NULL) {
-		Api->CloseRoutine(hCdRawBlock);
 		Api->CloseRoutine(h43wiki);
 		Api->CloseRoutine(h43ptDR);
 		Api->CloseRoutine(hATAwiki);
@@ -2284,7 +2278,6 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 	PUCHAR SysPartFatFs = (PUCHAR)malloc(SIZE_OF_SYS_PART_FAT_FS);
 	if (SysPartFatFs == NULL) {
 		free(Apm);
-		Api->CloseRoutine(hCdRawBlock);
 		Api->CloseRoutine(h43wiki);
 		Api->CloseRoutine(h43ptDR);
 		Api->CloseRoutine(hATAwiki);
@@ -2646,15 +2639,23 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 			printf("Could not write Apple_Driver_ATA.wiki\r\n");
 			break;
 		}
+		
+		U32LE hCdRaw;
+		Status = Api->OpenRoutine(SourceDevice, ArcOpenReadOnly, &hCdRaw);
+		if (ARC_FAIL(Status)) {
+			printf("Could not read Apple_Patches\r\n");
+			break;
+		}
+		hCdRawBlock = hCdRaw.v;
 
 		// Read the apple_patch partition from raw source disk.
 		SeekOffset = INT32_TO_LARGE_INTEGER(sectorPatch);
 		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
-		Status = Vectors->Seek(hCdRawBlock, &SeekOffset, SeekAbsolute);
+		Status = Api->SeekRoutine(hCdRawBlock, &SeekOffset, SeekAbsolute);
 		if (ARC_SUCCESS(Status)) {
-			Count = 0;
-			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART7_SIZE_BYTES, &Count);
-			if (ARC_SUCCESS(Status) && Count != REPART_OWR_APM_PART7_SIZE_BYTES) Status = _EBADF;
+			CountLe.v = 0;
+			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART7_SIZE_BYTES, &CountLe);
+			if (ARC_SUCCESS(Status) && CountLe.v != REPART_OWR_APM_PART7_SIZE_BYTES) Status = _EBADF;
 		}
 		if (ARC_FAIL(Status)) {
 			printf("Could not read Apple_Patches\r\n");
@@ -2698,11 +2699,11 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 		// Read bootimg
 		SeekOffset = INT32_TO_LARGE_INTEGER(sectorHfs);
 		SeekOffset.QuadPart *= REPART_SECTOR_SIZE;
-		Status = Vectors->Seek(hCdRawBlock, &SeekOffset, SeekAbsolute);
+		Status = Api->SeekRoutine(hCdRawBlock, &SeekOffset, SeekAbsolute);
 		if (ARC_SUCCESS(Status)) {
-			Count = 0;
-			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &Count);
-			if (ARC_SUCCESS(Status) && Count != REPART_OWR_APM_PART8_SIZE_BYTES) Status = _EIO;
+			CountLe.v = 0;
+			Status = Api->ReadRoutine(hCdRawBlock, Buffer, REPART_OWR_APM_PART8_SIZE_BYTES, &CountLe);
+			if (ARC_SUCCESS(Status) && CountLe.v != REPART_OWR_APM_PART8_SIZE_BYTES) Status = _EIO;
 		}
 		if (ARC_FAIL(Status)) {
 			printf("Could not read boot partition\r\n");
@@ -2837,7 +2838,7 @@ static ARC_STATUS ArcFsRepartitionDiskOldWorld(ULONG DeviceId, const char* Sourc
 	free(SysPartFatFs);
 	free(Apm);
 
-	Api->CloseRoutine(hCdRawBlock);
+	if (hCdRawBlock != 0) Api->CloseRoutine(hCdRawBlock);
 	Api->CloseRoutine(h43wiki);
 	Api->CloseRoutine(h43ptDR);
 	Api->CloseRoutine(hATAwiki);
