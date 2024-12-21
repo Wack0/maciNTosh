@@ -324,7 +324,7 @@ static UCHAR mesh_run_scsi_command(UCHAR TargetId, PUCHAR ScsiCmd, ULONG ScsiCmd
 				if (Write) {
 					mesh_set_tx_count(TransferLength);
 					s_Mesh->Command = SEQ_CMD_DATAOUT;
-					mesh_write_fifo(TransferBuffer, TransferLength);
+					mesh_write_fifo(TransferBuffer, TransferLength32);
 				}
 				else {
 					// for data in i think we have to just keep going filling the FIFO buffer manually when not using DMA
@@ -332,7 +332,7 @@ static UCHAR mesh_run_scsi_command(UCHAR TargetId, PUCHAR ScsiCmd, ULONG ScsiCmd
 					// No idea if it's different for heathrow but for compatibility (GC/OHare uses same SCSI block as Hydra) just use that
 
 					TxCount = TransferLength;
-					if (TxCount > 0x10) TxCount = 0x10;
+					if ((TransferLength32 == 0x10000 && TransferLength == 0) || TransferLength > 0x10) TxCount = 0x10;
 					mesh_set_tx_count(TxCount);
 					s_Mesh->Command = SEQ_CMD_DATAIN;
 				}
@@ -463,8 +463,26 @@ PMESH_SCSI_DEVICE mesh_open_drive(UCHAR TargetId, UCHAR Lun) {
 }
 
 enum {
-	READ16_MAXLEN = 0xFFFF
+	READ16_MAXLEN_BYTES = 0x10000
 };
+
+static ULONG mesh_cap_sectors(ULONG bytes_per_sector, ULONG length) {
+	ULONG max_sectors = READ16_MAXLEN_BYTES;
+	switch (bytes_per_sector) {
+		case 0x200:
+			max_sectors /= 0x200;
+			break;
+		case 0x800:
+			max_sectors /= 0x800;
+			break;
+		default:
+			max_sectors /= bytes_per_sector;
+			break;
+	}
+	//max_sectors--;
+	if (length > max_sectors) return max_sectors;
+	return length;
+}
 
 ULONG mesh_read_blocks(PMESH_SCSI_DEVICE drive, PVOID buffer, ULONG sector, ULONG count)
 {
@@ -474,9 +492,7 @@ ULONG mesh_read_blocks(PMESH_SCSI_DEVICE drive, PVOID buffer, ULONG sector, ULON
 	ULONG transferred = 0;
 
 	while (n) {
-		ULONG len = n;
-		if (len > READ16_MAXLEN)
-			len = READ16_MAXLEN;
+		ULONG len = mesh_cap_sectors(drive->BytesPerSector, n);
 
 		if (!mesh_read_sectors(drive, blk, dest, len)) {
 			break;
@@ -499,9 +515,7 @@ ULONG mesh_write_blocks(PMESH_SCSI_DEVICE drive, PVOID buffer, ULONG sector, ULO
 	ULONG transferred = 0;
 
 	while (n) {
-		ULONG len = n;
-		if (len > READ16_MAXLEN)
-			len = READ16_MAXLEN;
+		ULONG len = mesh_cap_sectors(drive->BytesPerSector, n);
 
 		if (!mesh_write_sectors(drive, blk, dest, len)) {
 			break;
