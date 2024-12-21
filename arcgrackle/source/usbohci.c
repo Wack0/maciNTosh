@@ -49,8 +49,8 @@ static u32 _phys_to_virt(u32 phys) {
 	// return uncached address if possible
 	if (phys >= 0xf0000000) return phys;
 	if (phys < 0x10000000) return 0x90000000 + phys;
-	if (phys < 0x80000000) return NULL;
-	if (phys >= 0x90000000) return NULL;
+	if (phys < 0x80000000) return 0;
+	if (phys >= 0x90000000) return 0;
 	return phys + (0xC0000000 - 0x80000000);
 }
 
@@ -58,12 +58,12 @@ static PVOID phys_to_virt(u32 phys) { return (PVOID)_phys_to_virt(phys); }
 
 static u32 virt_to_phys(PVOID _virt) {
 	u32 virt = (u32)_virt;
-	if (virt < 0x80000000) return NULL;
+	if (virt < 0x80000000) return 0;
 	if (virt < 0x90000000) return (virt - 0x80000000);
 	if (virt < 0xA0000000) return (virt - 0x90000000);
-	if (virt < 0xC0000000) return NULL;
+	if (virt < 0xC0000000) return 0;
 	if (virt < 0xD0000000) return (virt - 0xC0000000 + 0x80000000);
-	if (virt < 0xF0000000) return NULL;
+	if (virt < 0xF0000000) return 0;
 	return virt;
 }
 
@@ -238,7 +238,7 @@ ohci_init (void *bar)
 	init_device_entry (controller, 0);
 	OHCI_INST (controller)->roothub = controller->devices[0];
 
-	controller->reg_base = (u32)virt_to_phys((u32)bar);
+	controller->reg_base = (u32)virt_to_phys(bar);
 	OHCI_INST(controller)->opreg = (opreg_t*)bar;
 	usb_debug("OHCI Version %x.%x\n",
 		  (READ_OPREG(OHCI_INST(controller), HcRevision) >> 4) & 0xf,
