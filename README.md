@@ -1,16 +1,14 @@
+
 # Windows NT for Power Macintosh
 
-This repository currently contains the source code for the ARC firmware and its loader, targeting New World Power Macintosh systems using the *Gossamer* architecture (that is, MPC106 "Grackle" memory controller and PCI host, and "Heathrow" or "Paddington" super-I/O chip on the PCI bus). That is, the following systems:
+This repository currently contains the source code for the ARC firmware and its loader, targeting Power Macintosh systems using the *Gossamer* architecture (that is, MPC106 "Grackle" memory controller and PCI host, and "Heathrow" or "Paddington" super-I/O chip on the PCI bus). That is, the following systems:
 
+* Power Macintosh G3 (beige)
+* Macintosh PowerBook G3 Series *"Wallstreet"*, *"PDQ"*
 * iMac G3 (tray-loading)
 * Power Macintosh G3 (Blue & White) *"Yosemite"*
 * Macintosh PowerBook G3 Bronze Keyboard *"Lombard"* 
 * Power Macintosh G4 PCI *"Yikes!"*
-
-The ARC firmware itself runs at a low enough level that it should be compatible with Old World systems using the same chipset too, but there is currently no loader for these systems; these are the following:
-
-* Power Macintosh G3 (beige)
-* Macintosh PowerBook G3 Series *"Wallstreet"*, *"PDQ"*
 
 The repository additionally contains the source code for the ARC firmware and its loader, targeting PowerPC Macintosh systems using the *Mac99* architecture (the first iteration of which being the "Uni-North" memory controller and PCI host, and "KeyLargo" super-I/O chip on the PCI bus; later derivatives like "Intrepid" are also supported). That is, the following systems:
 
@@ -35,10 +33,11 @@ NT HAL and drivers have no source present for now.
 
 * Cuda and PMU
 	* ADB keyboard
-* Flat 32bpp video framebuffer, set up by the loader. Both ATI and nVidia hardware is supported, although nVidia hardware is currently untested.
+* Flat 32bpp video framebuffer, set up by the loader. Both ATI and nVidia hardware is supported, although some nVidia GPUs do not currently work.
 * Mac I/O internal IDE controllers, forked from OpenBIOS (**there are no drivers for PCI IDE controllers!**)
 ** The ATA-6 controllers used on some later Mac99 systems (Intrepid, U2) are supported. Please note LBA48 is not yet supported.
-* USB OHCI forked from OpenBIOS (**broken, nonworking, and initialisation code commented out**)
+* On pre-Mac99 systems, MESH SCSI controller.
+* USB OHCI forked from OpenBIOS (**on pre-Mac99 systems, broken, nonworking, and initialisation code commented out**)
 
 ## Drivers currently done for NT
 
@@ -58,7 +57,7 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 ### Preliminary
 
 * Grab binaries for your system from the releases page.
-* For Gossamer/Grackle systems, burn the image to optical media.
+* For Gossamer/Grackle systems, burn the image to optical media. Be sure to use the correct image for your system: use `nt_arcfw_grackle_ow.iso` for an Old World system (PowerMac G3 beige, PowerBook G3 Wallstreet/PDQ) and `nt_arcfw_grackle.iso` for a New World system (iMac G3 tray-loading, PowerMac G3 blue&white, PowerBook G3 Lombard, PowerMac G4 Yikes).
 	* For Mac99 systems, you can write the image to a USB drive.
 
 ### Partitioning Disk
@@ -68,7 +67,7 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 * When you get to ARC firmware menu, go to `Run firmware setup`, then `Repartition disk for NT installation`.
 * The disk partitioner will first let you enter partition size of the NT partition (up to the 16383x16x63 CHS limit, minus 32 MB ARC system partition + 1 MB for partition tables / MBR backup / OS 9 drivers / ARC environment variable storage, giving a maximum possible size of 8030 MB), then will drop to a menu allowing the creation of additional Mac partitions.
 	* If you choose an NT partition size over 2GB, the partition will be formatted to NTFS.
-		* Please be aware that currently, the NTFS version used for formatting is **incompatible with NT 3.51**, so if you want to install NT 3.51, use a partition size that is 2GB or lower.
+		* Please be aware that in releases before 2024-11-11, the NTFS version used for formatting is **incompatible with NT 3.51**, so if you want to install NT 3.51, use a partition size that is 2GB or lower.
 	* After adding a partition to the list, the only way to remove from the list is by cancelling the operation and starting the partitioner again.
 * After you have created all Mac partitions you want, choose `Finish partitioning and install`, and confirm the operation.
 * When finished, the partitioner will ask to `Press any key to restart`. Do so, and boot your PowerMac from the CD or USB drive again.
@@ -101,8 +100,10 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 ## Known issues (Grackle/Gossamer)
 
 * On a laptop system you may wish to remove the battery. At least on Lombard, the only way to power off the system when it bugchecks is via PMU reset or via total power removal.
+	* That said, PMU reset on Wallstreet/PDQ is easier, done via keyboard combination.
 * Currently the implemented drivers are the bare minimum to run and use NT.
 * I have observed PMU hard shutdowns on NT boot, fixed only by a PMU reset. No idea what caused this.
+* On Old World systems, if you have trouble booting to something that isn't the ARC firmware, holding `Esc` on boot will cause ARC firmware devices to be skipped.
 
 ## Known issues (Mac99)
 
@@ -113,10 +114,11 @@ NT 3.51 RTM and higher. NT 3.51 betas (build 944 and below) will need kernel pat
 
 If you create additional Mac partitions, please make note of the following:
 * The Mac partitions are listed in the partition table as HFS partitions but are not formatted. Use Disk Utility from OS X 10.1 or above to format the partitions. (Erase the **volumes**, not the **drive**!)
+	* For releases after 2024-11-11 you can now also boot into OS 9, which will show dialogs for formatting every unformatted partition on startup.
 * The OS X installer, and just booting OS 8/OS 9, will error if a valid MBR is present on the disk at all, which is required for NT. In ARC firmware, go to `Run firmware setup` then `Reboot to OSX install or OS8/OS9` if you wish to boot to those listed operating systems.
+	* For releases after 2024-11-11 ARC firmware now patches OS8/9 driver code when writing to disk such that booting to OS8/9 does not need this option, however if the on-disk driver partitions are updated by any means this will be required again.
 	* Booting back to the ARC firmware will fix the MBR, so be sure to always use this option when unsure.
 	* In particular, formatting the created HFS partitions in OS X 10.2 and 10.3 will not work when a valid MBR is present!
-* To allow OS 9 to mount the hard disk, boot from an OS 9 CD, run Drive Setup, select the drive and use the `Update Driver` option from the `Functions` menu.
 
 ## Building ARC firmware
 
@@ -134,6 +136,8 @@ You need devkitPPC. Additionally, a `libgcc.a` compiled for `powerpcle` must be 
 Replace `stage1.elf` and `stage2.elf` inside the release image. For recreating the image from a folder dump, use your preferred tool to create a hybrid HFS+ISO image, make sure `System` folder is blessed and `BootX` file is of type `tbxi`.
 
 Please note that `stage1.elf` must not be larger than 16KB and `stage2.elf` must not be larger than 224KB.
+
+For building the Old World bootloader, see its readme, for creating an Old World ISO image, see OldWorldIsoBuilder.
 
 ## Acknowledgements
 
