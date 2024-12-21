@@ -1132,7 +1132,7 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, ULONG NtPartMb, PULONG MacPartsM
 	// The partition tables are as follows:
 	// APM partition tables: - all dummy partitions are of type "CD_partition_scheme" so OSX disk utility doesn't show them
 	// Partition 1 - partition tables themselves, as usual for APM
-	// Partition 2 - apple_void single sector, this is the fake-ISO and MBR backup. "CD001" at offset 1, and MBR backup at end of sector
+	// Partition 2 - apple_void single sector, this is the MBR backup.
 	// Partition 3 - OS9 driver partition 1 (ptDR) (64KB)
 	// Partition 4 - OS9 driver partition 2 (wiki) (64KB)
 	// Partition 5 - OS9 patch partition (256KB)
@@ -1423,7 +1423,8 @@ ARC_STATUS ArcFsRepartitionDisk(ULONG DeviceId, ULONG NtPartMb, PULONG MacPartsM
 		// Wipe the DDT out of the in-memory MBR
 		memset(Mbr.MbrCode, 0, sizeof(Mbr.MbrCode));
 		// and write the ISO magic at offset 1
-		memcpy(&Mbr.MbrCode[1], "CD001", sizeof("CD001") - 1);
+		// BUGBUG: this was thought to be needed for tiger+, turns out it prevents install there.
+		//memcpy(&Mbr.MbrCode[1], "CD001", sizeof("CD001") - 1);
 		// and write this backup MBR to the sector:
 		Count = 0;
 		Status = Vectors->Write(DeviceId, &Mbr, sizeof(Mbr), &Count);
@@ -1873,7 +1874,7 @@ ARC_STATUS ArcFsRestoreMbr(ULONG DeviceId) {
 		// Don't assume anything about the backup sector. Write it out from scratch using the primary MBR.
 
 		memset(MbrBackup.MbrCode, 0, sizeof(MbrBackup.MbrCode));
-		memcpy(&MbrBackup.MbrCode[1], "CD001", sizeof("CD001") - 1);
+		//memcpy(&MbrBackup.MbrCode[1], "CD001", sizeof("CD001") - 1);
 		MbrpCopyTables(&MbrBackup, &MbrPrimary);
 
 		Position.QuadPart = REPART_APM_PART2_START * REPART_SECTOR_SIZE;
