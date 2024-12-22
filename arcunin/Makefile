@@ -1,8 +1,10 @@
-ifeq ($(strip $(DEVKITPPC)),)
-$(error "Set DEVKITPPC in your environment.")
+ifneq ($(strip $(DEVKITPPC)),)
+PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
 endif
 
-PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
+ifeq ($(strip $(PREFIX)),)
+$(error "Set DEVKITPPC or PREFIX in your environment.")
+endif
 
 CFLAGS = -mcpu=750 -m32 -mlittle -mhard-float -mno-eabi -mno-sdata
 CFLAGS += -ffreestanding -ffunction-sections -fdata-sections
@@ -48,7 +50,7 @@ $(TARGET): $(OBJS)
 	@echo "  LINK      $@"
 	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 	@cp $(TARGET) $(TARGET:%.elf=%_unstripped.elf)
-	@strip $(TARGET)
+	@$(STRIP) $(TARGET)
 
 ifneq ($(LDSCRIPT),)
 $(TARGET): $(LDSCRIPT)

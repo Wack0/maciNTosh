@@ -944,7 +944,7 @@ static bool FbSetDepthNv(OFHANDLE Screen) {
 	NV_PRMCIO_CRTC[1] = 0x03 | PixelDepth7;
 	__asm__ volatile ("eieio");
 	// Set PRAMDAC_GENERAL_CONTROL
-	volatile U32LE* NV_PRAMDAC_GENERAL_CONTROL = (volatile ULONG*)(PCRTC + 0x80600);
+	volatile U32LE* NV_PRAMDAC_GENERAL_CONTROL = (volatile U32LE*)(PCRTC + 0x80600);
 	NV_PRAMDAC_GENERAL_CONTROL->v = 0x101130; // PIXMIX_ON | VGA_STATE_SEL | ALT_MODE_SEL | BPC_8BITS
 	__asm__ volatile ("eieio");
 	// NV_CIO_CR_OFFSET = stride / 8

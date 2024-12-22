@@ -1,5 +1,9 @@
-ifeq ($(strip $(DEVKITPPC)),)
-$(error "Set DEVKITPPC in your environment.")
+ifneq ($(strip $(DEVKITPPC)),)
+PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
+endif
+
+ifeq ($(strip $(PREFIX)),)
+$(error "Set DEVKITPPC or PREFIX in your environment.")
 endif
 
 PREFIX = $(DEVKITPPC)/bin/powerpc-eabi-
@@ -48,7 +52,7 @@ $(TARGET): $(OBJS)
 	@echo "  LINK      $@"
 	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 	@cp $(TARGET) $(TARGET:%.elf=%_unstripped.elf)
-	@strip $(TARGET)
+	@$(STRIP) $(TARGET)
 
 ifneq ($(LDSCRIPT),)
 $(TARGET): $(LDSCRIPT)
