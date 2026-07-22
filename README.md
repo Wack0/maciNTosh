@@ -15,9 +15,9 @@ The repository additionally contains the source code for the ARC firmware and it
 * PowerBook G3 Firewire *"Pismo"*
 * iBook G3
 * iBook G4
-** The mid-2005 iBook G4 (`PowerBook6,7`) uses a USB mouse internally and therefore mouse will not work yet.
+	* The mid-2005 iBook G4 (`PowerBook6,7`) uses a USB mouse internally and therefore mouse will not work yet.
 * PowerBook G4
-** The early 2005 and later PowerBook G4s (`PowerBook6,8` and `PowerBook5,6` and later) use a USB keyboard and mouse and are therefore currently not practically supported.
+	* The early 2005 and later PowerBook G4s (`PowerBook6,8` and `PowerBook5,6` and later) use a USB keyboard and mouse and are therefore currently not practically supported.
 
 The following systems are theoretically supported, but currently not practically supported due to the lack of USB drivers:
 
@@ -35,7 +35,7 @@ NT HAL and drivers have no source present for now.
 	* ADB keyboard
 * Flat 32bpp video framebuffer, set up by the loader. Both ATI and nVidia hardware is supported, although some nVidia GPUs do not currently work.
 * Mac I/O internal IDE controllers, forked from OpenBIOS (**there are no drivers for PCI IDE controllers!**)
-** The ATA-6 controllers used on some later Mac99 systems (Intrepid, U2) are supported. Please note LBA48 is not yet supported.
+	* The ATA-6 controllers used on some later Mac99 systems (Intrepid, U2) are supported. Please note LBA48 is not yet supported.
 * On pre-Mac99 systems, MESH SCSI controller.
 * USB OHCI forked from OpenBIOS (**on pre-Mac99 systems, broken, nonworking, and initialisation code commented out**)
 
